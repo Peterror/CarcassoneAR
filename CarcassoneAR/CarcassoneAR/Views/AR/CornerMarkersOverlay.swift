@@ -38,8 +38,11 @@ struct CornerMarkersOverlay: View {
                     return CGPoint(x: screenX, y: screenY)
                 }
 
+                // Corner labels: TL, TR, BR, BL
+                let labels = ["TL", "TR", "BR", "BL"]
+
                 // Draw corner markers
-                for corner in scaledCorners {
+                for (index, corner) in scaledCorners.enumerated() {
                     // Draw outer circle (white with transparency)
                     let outerCircle = Circle()
                         .path(in: CGRect(x: corner.x - 15, y: corner.y - 15, width: 30, height: 30))
@@ -49,6 +52,18 @@ struct CornerMarkersOverlay: View {
                     let innerCircle = Circle()
                         .path(in: CGRect(x: corner.x - 5, y: corner.y - 5, width: 10, height: 10))
                     context.fill(innerCircle, with: .color(.cyan))
+
+                    // Draw label
+                    if index < labels.count {
+                        let label = labels[index]
+                        let textPosition = CGPoint(x: corner.x + 20, y: corner.y - 10)
+                        context.draw(
+                            Text(label)
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundColor(.white),
+                            at: textPosition
+                        )
+                    }
                 }
 
                 // Draw lines connecting corners to show capture region boundary
