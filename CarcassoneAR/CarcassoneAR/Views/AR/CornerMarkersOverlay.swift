@@ -64,6 +64,7 @@ struct CornerMarkersOverlay: View {
                             at: textPosition
                         )
                     }
+
                 }
 
                 // Draw lines connecting corners to show capture region boundary
