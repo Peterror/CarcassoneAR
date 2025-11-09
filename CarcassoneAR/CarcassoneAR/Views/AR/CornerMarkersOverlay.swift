@@ -43,7 +43,7 @@ struct CornerMarkersOverlay: View {
                     // Draw outer circle (white with transparency)
                     let outerCircle = Circle()
                         .path(in: CGRect(x: corner.x - 15, y: corner.y - 15, width: 30, height: 30))
-                    context.stroke(outerCircle, with: .color(.white.opacity(0.8)), lineWidth: 2)
+                    context.stroke(outerCircle, with: .color(.white.opacity(0.8)), lineWidth: 1)
 
                     // Draw inner circle (cyan solid)
                     let innerCircle = Circle()
@@ -60,7 +60,7 @@ struct CornerMarkersOverlay: View {
                     path.addLine(to: scaledCorners[3])
                     path.closeSubpath()
 
-                    context.stroke(path, with: .color(.green.opacity(0.6)), lineWidth: 2)
+                    context.stroke(path, with: .color(.green.opacity(0.6)), lineWidth: 1)
                 }
             }
         }
