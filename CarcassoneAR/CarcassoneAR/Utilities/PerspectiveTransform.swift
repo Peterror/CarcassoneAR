@@ -17,34 +17,32 @@ class PerspectiveTransformCalculator {
 
     /// Calculate the four corners of a rectangular plane region in 3D world space.
     ///
-    /// This method computes corner positions by applying the plane's transform matrix and optional rotation
-    /// around the plane's normal axis. The rotation allows the capture region to align with the camera's
-    /// orientation rather than the plane's intrinsic coordinate system.
+    /// This method computes corner positions by applying the plane's transform matrix and a quaternion
+    /// rotation that aligns the capture region with the camera's orientation. The quaternion properly
+    /// handles all three rotation axes (yaw, pitch, roll).
     ///
     /// - Parameters:
-    ///   - planeData: Contains the plane's dimensions (width, height), center position, transform matrix, and rotation angle
-    ///   - rotationAngle: Rotation in radians around the plane's Y-axis (normal). Defaults to 0 for no rotation.
-    ///                    Positive rotation is counter-clockwise when viewed from above the plane.
+    ///   - planeData: Contains the plane's dimensions (width, height), center position, transform matrix, and rotation quaternion
+    ///   - rotationQuaternion: Optional quaternion override for rotation. If nil, uses planeData.rotationQuaternion.
     /// - Returns: Array of 4 corner positions in world space, ordered as [topLeft, topRight, bottomRight, bottomLeft]
     ///            where "top" and "bottom" refer to the plane's local Z-axis direction
-    static func calculatePlaneCorners(planeData: PlaneData, rotationAngle: Float = 0) -> [SIMD3<Float>] {
+    static func calculatePlaneCorners(planeData: PlaneData, rotationQuaternion: simd_quatf? = nil) -> [SIMD3<Float>] {
         let captureCenter = planeData.position
         let transform = planeData.transform
         let halfWidth = planeData.width / 2.0
         let halfHeight = planeData.height / 2.0
+
+        // Use provided quaternion or fall back to planeData's quaternion
+        let rotation = rotationQuaternion ?? planeData.rotationQuaternion
 
         // Extract plane's local axes from transform matrix
         let xAxis = normalize(SIMD3<Float>(transform.columns.0.x, transform.columns.0.y, transform.columns.0.z))
         let yAxis = normalize(SIMD3<Float>(transform.columns.1.x, transform.columns.1.y, transform.columns.1.z))
         let zAxis = normalize(SIMD3<Float>(transform.columns.2.x, transform.columns.2.y, transform.columns.2.z))
 
-        // Apply rotation around plane's normal (Y-axis)
-        // Rotate X and Z axes by the given angle
-        let cosAngle = cos(rotationAngle)
-        let sinAngle = sin(rotationAngle)
-
-        let rotatedXAxis = xAxis * cosAngle + zAxis * sinAngle
-        let rotatedZAxis = -xAxis * sinAngle + zAxis * cosAngle
+        // Apply quaternion rotation to plane's X and Z axes
+        let rotatedXAxis = rotation.act(xAxis)
+        let rotatedZAxis = rotation.act(zAxis)
 
         // Calculate corners relative to capture center (which is in world space)
         let worldCorners: [SIMD3<Float>] = [
@@ -193,53 +191,86 @@ class PerspectiveTransformCalculator {
         return (pixelsPerMeterWidth + pixelsPerMeterHeight) / 2.0
     }
 
-    /// Calculate the rotation angle needed to align the capture region with the camera's orientation.
+    /// Calculate rotation quaternion using the viewing direction from camera to raycast point.
     ///
-    /// Projects the camera's forward viewing direction onto the plane and calculates the angle
-    /// needed to rotate the capture region so its edges align with where the camera is pointing.
-    /// This ensures the captured region rotates with the phone rather than staying fixed to the
-    /// plane's coordinate system.
+    /// This method uses the vector from the camera position to the raycast hit point (where
+    /// the screen center intersects the plane) to define the square's orientation. This vector
+    /// is projected onto the plane and normalized to get a direction that defines how the
+    /// square should be rotated.
+    ///
+    /// The method:
+    /// 1. Calculates vector from camera to raycast hit point
+    /// 2. Projects this vector onto the plane (removes component along plane normal)
+    /// 3. Creates a quaternion that rotates plane's Z-axis to align with this viewing direction
+    /// 4. This quaternion only rotates around the plane's normal (Y-axis), keeping rotation in-plane
     ///
     /// - Parameters:
     ///   - planeTransform: The plane's 4×4 transform matrix
-    ///   - cameraTransform: The camera's 4×4 transform matrix from ARFrame
-    /// - Returns: Rotation angle in radians around the plane's normal (Y-axis).
-    ///            Positive values rotate counter-clockwise when viewed from above the plane.
-    static func calculateCameraAlignedRotation(
+    ///   - cameraWorldPosition: The camera's 3D position in world space
+    ///   - screenCenterHitWorldPosition: The 3D position where screen center ray hits the plane
+    /// - Returns: Quaternion representing in-plane rotation to align with viewing direction
+    static func calculateRotationFromViewingDirection(
         planeTransform: simd_float4x4,
-        cameraTransform: simd_float4x4
-    ) -> Float {
-        // Extract plane's normal (Y-axis) and right axis (X-axis)
-        let planeNormal = normalize(SIMD3<Float>(
+        cameraWorldPosition: SIMD3<Float>,
+        screenCenterHitWorldPosition: SIMD3<Float>
+    ) -> simd_quatf {
+        // Extract plane's forward axis (Z-axis) and normal (Y-axis) from transform matrix
+        let planeForwardAxisInWorldSpace = normalize(SIMD3<Float>(
+            planeTransform.columns.2.x,
+            planeTransform.columns.2.y,
+            planeTransform.columns.2.z
+        ))
+        let planeNormalAxisInWorldSpace = normalize(SIMD3<Float>(
             planeTransform.columns.1.x,
             planeTransform.columns.1.y,
             planeTransform.columns.1.z
         ))
 
-        let planeRight = normalize(SIMD3<Float>(
-            planeTransform.columns.0.x,
-            planeTransform.columns.0.y,
-            planeTransform.columns.0.z
-        ))
+        // Calculate viewing direction: from hit point back to camera (reversed)
+        // We reverse it because we want to orient the square as if looking from the plane toward the camera
+        let hitPointToCameraDirection = normalize(cameraWorldPosition - screenCenterHitWorldPosition)
 
-        // Extract camera's forward direction (negative Z-axis in camera space)
-        let cameraForward = -normalize(SIMD3<Float>(
-            cameraTransform.columns.2.x,
-            cameraTransform.columns.2.y,
-            cameraTransform.columns.2.z
-        ))
+        // Project viewing direction onto the plane surface
+        // Remove the component along the plane's normal to get in-plane component
+        let hitPointToCameraDirectionAlongPlaneNormal = planeNormalAxisInWorldSpace * dot(hitPointToCameraDirection, planeNormalAxisInWorldSpace)
+        let hitPointToCameraDirectionProjectedOnPlane = hitPointToCameraDirection - hitPointToCameraDirectionAlongPlaneNormal
 
-        // Project camera forward onto plane (remove component along plane normal)
-        let cameraForwardOnPlane = cameraForward - planeNormal * dot(cameraForward, planeNormal)
-        let cameraForwardOnPlaneNormalized = normalize(cameraForwardOnPlane)
+        // Check if projection is valid
+        if length(hitPointToCameraDirectionProjectedOnPlane) < 0.001 {
+            // Edge case: viewing direction is perpendicular to plane, return identity
+            return simd_quatf(angle: 0, axis: planeNormalAxisInWorldSpace)
+        }
 
-        // Calculate angle between plane's right axis and projected camera forward
-        // This gives us the rotation needed to align square with camera direction
-        let cosAngle = dot(planeRight, cameraForwardOnPlaneNormalized)
-        let sinAngle = dot(cross(planeRight, cameraForwardOnPlaneNormalized), planeNormal)
-        let angle = atan2(sinAngle, cosAngle)
+        let hitPointToCameraDirectionProjectedOnPlaneNormalized = normalize(hitPointToCameraDirectionProjectedOnPlane)
 
-        return angle
+        // Calculate rotation from plane's forward axis (Z) to projected viewing direction
+        let quaternionRotationAxis = cross(planeForwardAxisInWorldSpace, hitPointToCameraDirectionProjectedOnPlaneNormalized)
+        let angleBetweenVectorsDotProduct = dot(planeForwardAxisInWorldSpace, hitPointToCameraDirectionProjectedOnPlaneNormalized)
+        // Clamp dot product to [-1, 1] to handle floating point errors in acos
+        let angleBetweenVectorsDotProductClamped = max(-1.0, min(1.0, angleBetweenVectorsDotProduct))
+        let angleBetweenVectorsRadians = acos(angleBetweenVectorsDotProductClamped)
+
+        print("🔄 Viewing Direction Projection:")
+        print("  Camera Position: (\(String(format: "%.3f", cameraWorldPosition.x)), \(String(format: "%.3f", cameraWorldPosition.y)), \(String(format: "%.3f", cameraWorldPosition.z)))")
+        print("  Raycast Hit: (\(String(format: "%.3f", screenCenterHitWorldPosition.x)), \(String(format: "%.3f", screenCenterHitWorldPosition.y)), \(String(format: "%.3f", screenCenterHitWorldPosition.z)))")
+        print("  Viewing Direction (Hit→Camera): (\(String(format: "%.3f", hitPointToCameraDirection.x)), \(String(format: "%.3f", hitPointToCameraDirection.y)), \(String(format: "%.3f", hitPointToCameraDirection.z)))")
+        print("  Projected on Plane: (\(String(format: "%.3f", hitPointToCameraDirectionProjectedOnPlaneNormalized.x)), \(String(format: "%.3f", hitPointToCameraDirectionProjectedOnPlaneNormalized.y)), \(String(format: "%.3f", hitPointToCameraDirectionProjectedOnPlaneNormalized.z)))")
+        print("  Rotation Angle: \(String(format: "%.1f", angleBetweenVectorsRadians * 180.0 / .pi))°")
+
+        // Handle edge cases: vectors parallel or anti-parallel
+        if length(quaternionRotationAxis) < 0.001 {
+            if angleBetweenVectorsDotProduct > 0 {
+                // Vectors point in same direction - no rotation needed
+                return simd_quatf(angle: 0, axis: planeNormalAxisInWorldSpace)
+            } else {
+                // Vectors point in opposite directions - 180° rotation around normal
+                return simd_quatf(angle: .pi, axis: planeNormalAxisInWorldSpace)
+            }
+        }
+
+        // Create quaternion from axis-angle representation
+        let quaternionRotationAxisNormalized = normalize(quaternionRotationAxis)
+        return simd_quatf(angle: angleBetweenVectorsRadians, axis: quaternionRotationAxisNormalized)
     }
 
     /// Project the screen center point onto the plane's infinite geometric surface.
@@ -327,17 +358,17 @@ class PerspectiveTransformCalculator {
     /// - Parameters:
     ///   - planeTransform: The plane's 4×4 transform matrix
     ///   - captureCenter: 3D world position where the capture region should be centered (from projectScreenCenterToPlane)
-    ///   - rotationAngle: Rotation in radians to align the square with camera orientation
+    ///   - rotationQuaternion: Quaternion to align the square with camera orientation
     ///   - camera: ARCamera for projecting corners to check visibility
     ///   - imageResolution: Camera image dimensions in pixels
     ///   - minDimension: Minimum square size in meters. Defaults to 0.4m (ARKit's plane detection minimum)
     ///   - maxDimension: Maximum square size in meters to attempt. Defaults to 5.0m
-    /// - Returns: PlaneData containing the optimal square dimensions, center position, transform, and rotation angle.
-    ///            The width and height will be equal (square), and rotationAngle will be stored for later use.
+    /// - Returns: PlaneData containing the optimal square dimensions, center position, transform, and rotation quaternion.
+    ///            The width and height will be equal (square), and rotationQuaternion will be stored for later use.
     static func calculateVisibleSquareRegion(
         planeTransform: simd_float4x4,
         captureCenter: SIMD3<Float>,
-        rotationAngle: Float,
+        rotationQuaternion: simd_quatf,
         camera: ARCamera,
         imageResolution: CGSize,
         minDimension: Float = 0.4,
@@ -358,10 +389,11 @@ class PerspectiveTransformCalculator {
                 width: testSize,
                 height: testSize,  // Square: width == height
                 position: captureCenter,
-                transform: planeTransform
+                transform: planeTransform,
+                rotationQuaternion: rotationQuaternion
             )
 
-            let corners3D = calculatePlaneCorners(planeData: testPlaneData, rotationAngle: rotationAngle)
+            let corners3D = calculatePlaneCorners(planeData: testPlaneData, rotationQuaternion: rotationQuaternion)
             let corners2D = projectCornersToImage(
                 corners3D: corners3D,
                 camera: camera,
@@ -380,11 +412,10 @@ class PerspectiveTransformCalculator {
             iteration += 1
         }
 
-        let rotationDegrees = rotationAngle * 180.0 / .pi
         print("🔍 Visible square region calculation:")
         print("  Capture center: (\(captureCenter.x), \(captureCenter.y), \(captureCenter.z))")
         print("  Square size: \(bestSize)m × \(bestSize)m")
-        print("  Rotation: \(rotationDegrees)°")
+        print("  Rotation quaternion: \(rotationQuaternion)")
         print("  Iterations: \(iteration)")
 
         return PlaneData(
@@ -392,7 +423,7 @@ class PerspectiveTransformCalculator {
             height: bestSize,
             position: captureCenter,
             transform: planeTransform,
-            rotationAngle: rotationAngle
+            rotationQuaternion: rotationQuaternion
         )
     }
 
@@ -404,7 +435,7 @@ class PerspectiveTransformCalculator {
     /// transformations during image capture.
     ///
     /// - Parameters:
-    ///   - planeData: Contains plane dimensions, position, transform, and rotation angle
+    ///   - planeData: Contains plane dimensions, position, transform, and rotation quaternion
     ///   - camera: ARCamera from the current frame for projection
     ///   - cameraTransform: Camera's 4×4 transform matrix for angle calculation
     ///   - imageResolution: Camera image size in pixels
@@ -418,8 +449,8 @@ class PerspectiveTransformCalculator {
         imageResolution: CGSize,
         outputMaxWidth: CGFloat = 2048
     ) -> PerspectiveTransform? {
-        // Calculate 3D corners with rotation applied
-        let corners3D = calculatePlaneCorners(planeData: planeData, rotationAngle: planeData.rotationAngle)
+        // Calculate 3D corners with rotation applied (uses planeData.rotationQuaternion by default)
+        let corners3D = calculatePlaneCorners(planeData: planeData)
 
         // Project to 2D image coordinates
         let corners2D = projectCornersToImage(
