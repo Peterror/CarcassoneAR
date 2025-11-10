@@ -9,6 +9,13 @@ import SwiftUI
 import RealityKit
 import ARKit
 
+// Helper extension to extract xyz from simd_float4
+extension simd_float4 {
+    var xyz: SIMD3<Float> {
+        return SIMD3<Float>(x, y, z)
+    }
+}
+
 struct ARViewContainer: UIViewRepresentable {
     @Binding var planeData: PlaneData?
     @Binding var capturedFrame: CapturedFrame?
@@ -136,11 +143,51 @@ struct ARViewContainer: UIViewRepresentable {
             self.parent = parent
         }
 
+        /// Convert quaternion to Euler angles (in degrees) using ARKit's rotation order.
+        ///
+        /// ARKit applies rotations in the order: Roll (X) → Pitch (Y) → Yaw (Z).
+        /// This function extracts Euler angles from a quaternion using the XYZ convention
+        /// to match ARKit's coordinate system and rotation order.
+        ///
+        /// - Parameter q: The quaternion to convert
+        /// - Returns: SIMD3<Float> containing (roll, pitch, yaw) in degrees
+        func quaternionToEulerAngles(_ q: simd_quatf) -> SIMD3<Float> {
+            // Extract quaternion components
+            let w = q.vector.w
+            let x = q.vector.x
+            let y = q.vector.y
+            let z = q.vector.z
+
+            // Roll (X-axis rotation) - applied first
+            let sinr_cosp = 2 * (w * x + y * z)
+            let cosr_cosp = 1 - 2 * (x * x + y * y)
+            let roll = atan2(sinr_cosp, cosr_cosp)
+
+            // Pitch (Y-axis rotation) - applied second
+            let sinp = 2 * (w * y - z * x)
+            let pitch: Float
+            if abs(sinp) >= 1 {
+                // Gimbal lock case: use ±90 degrees
+                pitch = copysign(.pi / 2, sinp)
+            } else {
+                pitch = asin(sinp)
+            }
+
+            // Yaw (Z-axis rotation) - applied third
+            let siny_cosp = 2 * (w * z + x * y)
+            let cosy_cosp = 1 - 2 * (y * y + z * z)
+            let yaw = atan2(siny_cosp, cosy_cosp)
+
+            // Convert radians to degrees
+            let radToDeg: Float = 180.0 / .pi
+            return SIMD3<Float>(roll * radToDeg, pitch * radToDeg, yaw * radToDeg)
+        }
+
         /// Calculate and update the screen-centered capture region with phone-aligned rotation.
         ///
         /// This is the main method that orchestrates the capture region calculation. It:
         /// 1. Projects screen center onto the plane's infinite surface
-        /// 2. Calculates rotation angle to align with camera's forward direction
+        /// 2. Calculates rotation quaternion to align with camera's full 3D orientation
         /// 3. Finds the largest square that fits in the camera view
         /// 4. Updates the 3D visualization (green mesh and cyan sphere)
         /// 5. Stores the capture region data for later use during image capture
@@ -159,24 +206,70 @@ struct ARViewContainer: UIViewRepresentable {
                 height: CGFloat(CVPixelBufferGetHeight(frame.capturedImage))
             )
 
-            // Calculate rotation angle to align with camera's forward direction
-            let rotationAngle = PerspectiveTransformCalculator.calculateCameraAlignedRotation(
-                planeTransform: planeAnchor.transform,
-                cameraTransform: frame.camera.transform
+            // Extract plane position and orientation
+            let planePosition = SIMD3<Float>(
+                planeAnchor.transform.columns.3.x,
+                planeAnchor.transform.columns.3.y,
+                planeAnchor.transform.columns.3.z
+            )
+            let planeQuaternion = simd_quatf(planeAnchor.transform)
+            let planeEuler = quaternionToEulerAngles(planeQuaternion)
+
+            // Extract camera position and orientation
+            let cameraPosition = SIMD3<Float>(
+                frame.camera.transform.columns.3.x,
+                frame.camera.transform.columns.3.y,
+                frame.camera.transform.columns.3.z
+            )
+            let cameraQuaternion = simd_quatf(frame.camera.transform)
+            let cameraEuler = quaternionToEulerAngles(cameraQuaternion)
+
+            print("\n📐 Plane & Camera Transforms:")
+            print("  Plane Position: (\(String(format: "%.3f", planePosition.x)), \(String(format: "%.3f", planePosition.y)), \(String(format: "%.3f", planePosition.z)))")
+            print("  Plane Euler (deg): Roll=\(String(format: "%.1f", planeEuler.x))°, Pitch=\(String(format: "%.1f", planeEuler.y))°, Yaw=\(String(format: "%.1f", planeEuler.z))°")
+            print("  Camera Position: (\(String(format: "%.3f", cameraPosition.x)), \(String(format: "%.3f", cameraPosition.y)), \(String(format: "%.3f", cameraPosition.z)))")
+            print("  Camera Euler (deg): Roll=\(String(format: "%.1f", cameraEuler.x))°, Pitch=\(String(format: "%.1f", cameraEuler.y))°, Yaw=\(String(format: "%.1f", cameraEuler.z))°")
+
+            // Use ARRaycastQuery to find where screen center intersects the plane
+            // Screen center is at (0.5, 0.5) in normalized viewport coordinates
+            let viewportCenter = CGPoint(x: arView.bounds.width * 0.5, y: arView.bounds.height * 0.5)
+
+            // Create raycast query for existing plane geometry
+            let raycastQuery = ARRaycastQuery(
+                origin: frame.camera.transform.columns.3.xyz,
+                direction: -frame.camera.transform.columns.2.xyz,
+                allowing: .existingPlaneGeometry,
+                alignment: .horizontal
             )
 
-            // Project screen center onto plane's infinite surface
-            guard let captureCenter = PerspectiveTransformCalculator.projectScreenCenterToPlane(
+            let raycastResults = arView.session.raycast(raycastQuery)
+
+            guard let firstResult = raycastResults.first else {
+                print("⚠️ Raycast did not hit plane")
+                return
+            }
+
+            // Extract the 3D world position where the ray hit the plane
+            let captureCenter = SIMD3<Float>(
+                firstResult.worldTransform.columns.3.x,
+                firstResult.worldTransform.columns.3.y,
+                firstResult.worldTransform.columns.3.z
+            )
+
+            print("  Raycast hit at: (\(String(format: "%.3f", captureCenter.x)), \(String(format: "%.3f", captureCenter.y)), \(String(format: "%.3f", captureCenter.z)))")
+
+            // Calculate rotation quaternion using viewing direction (camera → raycast hit)
+            let captureRegionRotationQuaternion = PerspectiveTransformCalculator.calculateRotationFromViewingDirection(
                 planeTransform: planeAnchor.transform,
-                camera: frame.camera,
-                imageResolution: imageResolution
-            ) else { return }
+                cameraWorldPosition: cameraPosition,
+                screenCenterHitWorldPosition: captureCenter
+            )
 
             // Calculate largest square region that fits in view
             let squareRegionData = PerspectiveTransformCalculator.calculateVisibleSquareRegion(
                 planeTransform: planeAnchor.transform,
                 captureCenter: captureCenter,
-                rotationAngle: rotationAngle,
+                rotationQuaternion: captureRegionRotationQuaternion,
                 camera: frame.camera,
                 imageResolution: imageResolution
             )
@@ -186,16 +279,15 @@ struct ARViewContainer: UIViewRepresentable {
                 arView: arView,
                 planeAnchor: planeAnchor,
                 captureCenter: captureCenter,
-                rotationAngle: squareRegionData.rotationAngle,
+                rotationQuaternion: squareRegionData.rotationQuaternion,
                 width: squareRegionData.width,
                 height: squareRegionData.height
             )
 
             // Calculate projected corners for visualization
-            // Note: squareRegionData already contains rotationAngle, so we use it from there
+            // Note: squareRegionData already contains rotationQuaternion, so we use it by default
             let corners3D = PerspectiveTransformCalculator.calculatePlaneCorners(
-                planeData: squareRegionData,
-                rotationAngle: squareRegionData.rotationAngle
+                planeData: squareRegionData
             )
             let corners2D = PerspectiveTransformCalculator.projectCornersToImage(
                 corners3D: corners3D,
@@ -214,68 +306,57 @@ struct ARViewContainer: UIViewRepresentable {
         /// Update the 3D visualization of the capture region in the AR scene.
         ///
         /// Creates or updates the visual indicators showing where the capture region is located:
-        /// - Green semi-transparent mesh: Shows the capture region boundaries
-        /// - Cyan sphere: Marks the center point of the capture region
+        /// - Green semi-transparent square mesh: Shows the plane's orientation (fixed to plane surface)
+        /// - Cyan sphere: Marks the plane's geometric center (fixed position on plane)
         ///
-        /// Both elements are positioned at the screen-centered capture location and the green mesh
-        /// is rotated to align with the phone's orientation. The visualization is anchored to the
-        /// detected plane's coordinate system.
+        /// Both elements are fixed to the plane's coordinate system with NO rotation applied,
+        /// allowing us to visualize the plane's actual orientation for debugging purposes.
+        /// Both visualizations are anchored to the detected plane's coordinate system.
         ///
         /// - Parameters:
         ///   - arView: The ARView instance to add/update entities in
         ///   - planeAnchor: The detected plane anchor providing the coordinate system
-        ///   - captureCenter: 3D world position where the capture region is centered
-        ///   - rotationAngle: Rotation in radians to apply to the green mesh (aligns with camera)
+        ///   - captureCenter: 3D world position where the capture region is centered (currently unused for fixed visualization)
+        ///   - rotationQuaternion: Quaternion rotation (currently unused for fixed visualization)
         ///   - width: Width of the capture region in meters
         ///   - height: Height of the capture region in meters
         func updatePlaneVisualization(
             arView: ARView,
             planeAnchor: ARPlaneAnchor,
             captureCenter: SIMD3<Float>,
-            rotationAngle: Float,
+            rotationQuaternion: simd_quatf,
             width: Float,
             height: Float
         ) {
             let anchorID = planeAnchor.identifier
 
+            // Use fixed square size for debugging (0.5m x 0.5m)
+            let fixedSize: Float = 0.5
+
             if let existingAnchor = planeEntities[anchorID] {
-                // Update existing visualization - move to screen-centered position and rotate
+                // Update existing visualization
                 if let planeVisual = existingAnchor.children.first(where: { $0.name == "planeVisual" }) {
-                    let newMesh = MeshResource.generatePlane(width: width, depth: height)
+                    let newMesh = MeshResource.generatePlane(width: fixedSize, depth: fixedSize)
                     var planeMaterial = SimpleMaterial()
                     planeMaterial.color = .init(tint: .green.withAlphaComponent(0.3))
                     planeVisual.components.set(ModelComponent(mesh: newMesh, materials: [planeMaterial]))
 
-                    // Apply rotation around Y-axis (normal to plane)
-                    planeVisual.orientation = simd_quatf(angle: rotationAngle, axis: SIMD3<Float>(0, 1, 0))
+                    // NO rotation - fixed to plane's coordinate system
+                    planeVisual.orientation = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
                 }
 
-                // Move sphere cursor to screen-centered capture position
-                if let cursor = existingAnchor.children.first(where: { $0.name == "cursor" }) {
-                    // Convert world position to local position relative to anchor
-                    let anchorTransform = planeAnchor.transform
-                    let anchorInverse = anchorTransform.inverse
-                    let localPos4 = anchorInverse * SIMD4<Float>(captureCenter.x, captureCenter.y, captureCenter.z, 1.0)
-                    cursor.position = SIMD3<Float>(localPos4.x, localPos4.y + 0.001, localPos4.z)
-                }
+                // Cyan sphere stays at plane's geometric center (origin) - no position update needed
+                // It was positioned at (0, 0.001, 0) in local coordinates when created
 
-                // Move plane visual to screen-centered capture position
+                // Green mesh also stays at plane center for debugging
                 if let planeVisual = existingAnchor.children.first(where: { $0.name == "planeVisual" }) {
-                    let anchorTransform = planeAnchor.transform
-                    let anchorInverse = anchorTransform.inverse
-                    let localPos4 = anchorInverse * SIMD4<Float>(captureCenter.x, captureCenter.y, captureCenter.z, 1.0)
-                    planeVisual.position = SIMD3<Float>(localPos4.x, localPos4.y + 0.001, localPos4.z)
+                    planeVisual.position = SIMD3<Float>(0, 0.001, 0)
                 }
             } else {
                 // Create new visualization anchored to plane
                 let anchorEntity = AnchorEntity(world: planeAnchor.transform)
 
-                // Convert world capture center to local coordinates
-                let anchorInverse = planeAnchor.transform.inverse
-                let localPos4 = anchorInverse * SIMD4<Float>(captureCenter.x, captureCenter.y, captureCenter.z, 1.0)
-                let localPosition = SIMD3<Float>(localPos4.x, localPos4.y + 0.001, localPos4.z)
-
-                // Create cursor at screen-centered position
+                // Create cyan sphere at plane's geometric center (origin)
                 let cursor = Entity()
                 cursor.name = "cursor"
                 let cursorMesh = MeshResource.generateSphere(radius: 0.025)
@@ -283,19 +364,20 @@ struct ARViewContainer: UIViewRepresentable {
                     mesh: cursorMesh,
                     materials: [SimpleMaterial(color: .cyan, roughness: 0.15, isMetallic: true)]
                 ))
-                cursor.position = localPosition
+                // Position at plane center (local origin)
+                cursor.position = SIMD3<Float>(0, 0.001, 0)
 
-                // Create plane visualization at screen-centered position with rotation
+                // Create green square mesh at plane center (local origin) with NO rotation
                 let planeVisual = Entity()
                 planeVisual.name = "planeVisual"
-                let planeMesh = MeshResource.generatePlane(width: width, depth: height)
+                let planeMesh = MeshResource.generatePlane(width: fixedSize, depth: fixedSize)
                 var planeMaterial = SimpleMaterial()
                 planeMaterial.color = .init(tint: .green.withAlphaComponent(0.3))
                 planeVisual.components.set(ModelComponent(mesh: planeMesh, materials: [planeMaterial]))
-                planeVisual.position = localPosition
+                planeVisual.position = SIMD3<Float>(0, 0.001, 0)
 
-                // Apply rotation around Y-axis (normal to plane) to align with camera
-                planeVisual.orientation = simd_quatf(angle: rotationAngle, axis: SIMD3<Float>(0, 1, 0))
+                // NO rotation - fixed to plane's coordinate system for debugging
+                planeVisual.orientation = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
 
                 anchorEntity.addChild(cursor)
                 anchorEntity.addChild(planeVisual)

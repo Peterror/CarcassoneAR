@@ -31,9 +31,8 @@ struct PlaneData {
     /// Column 1 (Y-axis) is the plane's normal vector pointing up from the surface.
     var transform: simd_float4x4
 
-    /// Rotation angle in radians around the plane's normal (Y-axis).
-    /// This aligns the capture region with the camera's forward direction, ensuring the
-    /// captured image rotates with the phone rather than staying fixed to the plane's axes.
-    /// Positive values rotate counter-clockwise when viewed from above the plane.
-    var rotationAngle: Float = 0
+    /// Quaternion representing the relative rotation from plane orientation to camera orientation.
+    /// This aligns the capture region with the camera's full 3D orientation (yaw, pitch, roll),
+    /// ensuring the captured image rotates with the phone rather than staying fixed to the plane's axes.
+    var rotationQuaternion: simd_quatf = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
 }

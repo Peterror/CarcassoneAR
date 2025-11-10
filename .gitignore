@@ -1,0 +1,86 @@
+# ===========================
+# Xcode & Swift .gitignore
+# ===========================
+
+# Build products
+build/
+DerivedData/
+
+# User-specific files
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xcworkspacedata
+
+# Swift Package Manager
+Packages/
+.build/
+.swiftpm/xcode/
+
+# CocoaPods
+Pods/
+Podfile.lock
+
+# Carthage
+Carthage/Build/
+Carthage/Checkouts/
+
+# Accio dependency manager
+Dependencies/
+.accio/
+
+# Fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output/
+
+# iOS specific
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# macOS specific
+*.app
+*.framework
+*.xcarchive
+
+# Swift Playgrounds
+timeline.xctimeline
+playground.xcworkspace
+
+# Xcode Server
+integration*
+*.xccheckout
+
+# IDE artifacts
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.pbxuser
+
+# Asset catalogs
+*.xcassets/*.json
+
+# Temporary or cache files
+*.moved-aside
+*.swp
+*.lock
+*.bak
+*.tmp
+*.orig
+
+# Optional: Ignore Swift Package Manager resolved file
+# Uncomment if you prefer not to track dependencies versions
+# Package.resolved
+
+# Environment & config files
+.env
+*.plist
+
+# Output logs
+*.log
+
+# ===========================
+# End of .gitignore
+# ===========================
