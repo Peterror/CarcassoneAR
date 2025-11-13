@@ -19,6 +19,7 @@ struct ContentView: View {
     @State private var capturedFrame: CapturedFrame?
     @State private var captureNow: Bool = false
     @State private var projectedCorners: [CGPoint]?
+    @State private var cameraImageSize: CGSize = .zero
     @State private var pendingViewSwitch: Bool = false
 
     var body: some View {
@@ -30,13 +31,15 @@ struct ContentView: View {
                     capturedFrame: $capturedFrame,
                     resetTrigger: $resetTrigger,
                     captureNow: $captureNow,
-                    projectedCorners: $projectedCorners
+                    projectedCorners: $projectedCorners,
+                    cameraImageSize: $cameraImageSize
                 )
                 .edgesIgnoringSafeArea(.all)
 
-                // Corner markers overlay
-                if let corners = projectedCorners {
-                    CornerMarkersOverlay(corners: corners)
+                // Corner markers overlay - must also ignore safe area to match ARView coordinate system
+                if let corners = projectedCorners, cameraImageSize != .zero {
+                    CornerMarkersOverlay(corners: corners, imageSize: cameraImageSize)
+                        .edgesIgnoringSafeArea(.all)
                 }
 
                 // UI Overlay for AR View

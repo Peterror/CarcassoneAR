@@ -22,6 +22,7 @@ struct ARViewContainer: UIViewRepresentable {
     @Binding var resetTrigger: Bool
     @Binding var captureNow: Bool
     @Binding var projectedCorners: [CGPoint]?
+    @Binding var cameraImageSize: CGSize
 
     func makeUIView(context: Context) -> ARView {
         let arView = ARView(frame: .zero)
@@ -300,6 +301,7 @@ struct ARViewContainer: UIViewRepresentable {
                 self.currentPlaneData = squareRegionData
                 self.parent.planeData = squareRegionData
                 self.parent.projectedCorners = corners2D
+                self.parent.cameraImageSize = imageResolution
             }
         }
 
