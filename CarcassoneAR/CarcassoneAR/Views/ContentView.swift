@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import OSLog
 
 enum ViewMode {
     case ar
@@ -87,7 +88,7 @@ struct ContentView: View {
                     HStack {
                         // Reset Button
                         Button(action: {
-                            print("Reset button tapped")
+                            AppLogger.contentView.notice("Reset button tapped")
                             resetTrigger = true
                         }) {
                             Text("Reset")

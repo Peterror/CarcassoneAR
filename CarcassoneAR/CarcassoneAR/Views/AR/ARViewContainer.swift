@@ -8,6 +8,7 @@
 import SwiftUI
 import RealityKit
 import ARKit
+import OSLog
 
 // Helper extension to extract xyz from simd_float4
 extension simd_float4 {
@@ -66,7 +67,7 @@ struct ARViewContainer: UIViewRepresentable {
             configuration.planeDetection = [.horizontal]
             arView.session.run(configuration, options: [.resetTracking, .removeExistingAnchors])
 
-            print("🔄 Reset: Unlocked plane, ready to detect new surface")
+            AppLogger.arCoordinator.info("Reset: Unlocked plane, ready to detect new surface")
 
             DispatchQueue.main.async {
                 planeData = nil
@@ -96,7 +97,7 @@ struct ARViewContainer: UIViewRepresentable {
 
                     // Only lock onto the first plane if we haven't already
                     if coordinator.lockedPlaneID == nil {
-                        print("✅ Plane detected and locked! Size: \(planeAnchor.planeExtent.width)m × \(planeAnchor.planeExtent.height)m")
+                        AppLogger.planeDetection.info("Plane detected and locked! Size: \(planeAnchor.planeExtent.width, format: .fixed(precision: 2))m × \(planeAnchor.planeExtent.height, format: .fixed(precision: 2))m")
 
                         // Lock onto this plane - store transform for future calculations
                         coordinator.lockedPlaneID = planeAnchor.identifier
@@ -225,16 +226,13 @@ struct ARViewContainer: UIViewRepresentable {
             let cameraQuaternion = simd_quatf(frame.camera.transform)
             let cameraEuler = quaternionToEulerAngles(cameraQuaternion)
 
-            print("\n📐 Plane & Camera Transforms:")
-            print("  Plane Position: (\(String(format: "%.3f", planePosition.x)), \(String(format: "%.3f", planePosition.y)), \(String(format: "%.3f", planePosition.z)))")
-            print("  Plane Euler (deg): Roll=\(String(format: "%.1f", planeEuler.x))°, Pitch=\(String(format: "%.1f", planeEuler.y))°, Yaw=\(String(format: "%.1f", planeEuler.z))°")
-            print("  Camera Position: (\(String(format: "%.3f", cameraPosition.x)), \(String(format: "%.3f", cameraPosition.y)), \(String(format: "%.3f", cameraPosition.z)))")
-            print("  Camera Euler (deg): Roll=\(String(format: "%.1f", cameraEuler.x))°, Pitch=\(String(format: "%.1f", cameraEuler.y))°, Yaw=\(String(format: "%.1f", cameraEuler.z))°")
+            AppLogger.arCoordinator.debug("Plane & Camera Transforms:")
+            AppLogger.arCoordinator.debug("  Plane Position: (\(planePosition.x, format: .fixed(precision: 3)), \(planePosition.y, format: .fixed(precision: 3)), \(planePosition.z, format: .fixed(precision: 3)))")
+            AppLogger.arCoordinator.debug("  Plane Euler (deg): Roll=\(planeEuler.x, format: .fixed(precision: 1))°, Pitch=\(planeEuler.y, format: .fixed(precision: 1))°, Yaw=\(planeEuler.z, format: .fixed(precision: 1))°")
+            AppLogger.arCoordinator.debug("  Camera Position: (\(cameraPosition.x, format: .fixed(precision: 3)), \(cameraPosition.y, format: .fixed(precision: 3)), \(cameraPosition.z, format: .fixed(precision: 3)))")
+            AppLogger.arCoordinator.debug("  Camera Euler (deg): Roll=\(cameraEuler.x, format: .fixed(precision: 1))°, Pitch=\(cameraEuler.y, format: .fixed(precision: 1))°, Yaw=\(cameraEuler.z, format: .fixed(precision: 1))°")
 
             // Use ARRaycastQuery to find where screen center intersects the plane
-            // Screen center is at (0.5, 0.5) in normalized viewport coordinates
-            let viewportCenter = CGPoint(x: arView.bounds.width * 0.5, y: arView.bounds.height * 0.5)
-
             // Create raycast query for existing plane geometry
             let raycastQuery = ARRaycastQuery(
                 origin: frame.camera.transform.columns.3.xyz,
@@ -246,7 +244,7 @@ struct ARViewContainer: UIViewRepresentable {
             let raycastResults = arView.session.raycast(raycastQuery)
 
             guard let firstResult = raycastResults.first else {
-                print("⚠️ Raycast did not hit plane")
+                AppLogger.arCoordinator.error("Raycast did not hit plane")
                 return
             }
 
@@ -257,7 +255,7 @@ struct ARViewContainer: UIViewRepresentable {
                 firstResult.worldTransform.columns.3.z
             )
 
-            print("  Raycast hit at: (\(String(format: "%.3f", captureCenter.x)), \(String(format: "%.3f", captureCenter.y)), \(String(format: "%.3f", captureCenter.z)))")
+            AppLogger.arCoordinator.debug("  Raycast hit at: (\(captureCenter.x, format: .fixed(precision: 3)), \(captureCenter.y, format: .fixed(precision: 3)), \(captureCenter.z, format: .fixed(precision: 3)))")
 
             // Calculate rotation quaternion using viewing direction (camera → raycast hit)
             let captureRegionRotationQuaternion = PerspectiveTransformCalculator.calculateRotationFromViewingDirection(
@@ -403,21 +401,21 @@ struct ARViewContainer: UIViewRepresentable {
         /// which can later be used to apply perspective correction and show a top-down orthogonal view.
         func captureCameraFrameWithTransform() {
             guard let arView = arView else {
-                print("ERROR: arView is nil")
+                AppLogger.arCoordinator.error("arView is nil")
                 return
             }
 
             guard let frame = arView.session.currentFrame else {
-                print("ERROR: arView.session.currentFrame is nil")
+                AppLogger.arCoordinator.error("arView.session.currentFrame is nil")
                 return
             }
 
             guard let planeData = currentPlaneData else {
-                print("ERROR: currentPlaneData is nil")
+                AppLogger.arCoordinator.error("currentPlaneData is nil")
                 return
             }
 
-            print("\n=== Capturing Camera Frame with Transformation ===")
+            AppLogger.arCoordinator.notice("Capturing camera frame with transformation")
 
             // Get the camera image buffer
             let pixelBuffer = frame.capturedImage
@@ -428,13 +426,13 @@ struct ARViewContainer: UIViewRepresentable {
 
             // Convert to CGImage
             guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
-                print("Failed to create CGImage")
+                AppLogger.arCoordinator.error("Failed to create CGImage")
                 return
             }
 
             // Rotate to correct orientation (portrait)
             let uiImage = UIImage(cgImage: cgImage, scale: 1.0, orientation: .right)
-            print("Camera image captured: \(uiImage.size)")
+            AppLogger.arCoordinator.info("Camera image captured: \(uiImage.size.width, format: .fixed(precision: 0)) × \(uiImage.size.height, format: .fixed(precision: 0))")
 
             // Get image resolution for projection calculations
             let bufferWidth = CVPixelBufferGetWidth(pixelBuffer)
@@ -443,7 +441,7 @@ struct ARViewContainer: UIViewRepresentable {
                 width: CGFloat(bufferWidth),
                 height: CGFloat(bufferHeight)
             )
-            print("Pixel buffer dimensions: \(bufferWidth) × \(bufferHeight)")
+            AppLogger.arCoordinator.debug("Pixel buffer dimensions: \(bufferWidth) × \(bufferHeight)")
 
             // Calculate perspective transformation
             guard var transform = PerspectiveTransformCalculator.createTransform(
@@ -453,13 +451,13 @@ struct ARViewContainer: UIViewRepresentable {
                 imageResolution: imageResolution,
                 outputMaxWidth: 2048
             ) else {
-                print("Failed to create transformation")
+                AppLogger.arCoordinator.error("Failed to create transformation")
                 return
             }
 
-            print("Transformation calculated:")
-            print("  Camera angle: \(transform.quality.cameraAngleDegrees)°")
-            print("  Quality: \(transform.quality.qualityDescription)")
+            AppLogger.arCoordinator.info("Transformation calculated:")
+            AppLogger.arCoordinator.info("  Camera angle: \(transform.quality.cameraAngleDegrees, format: .fixed(precision: 1))°")
+            AppLogger.arCoordinator.info("  Quality: \(transform.quality.qualityDescription)")
 
             // Rotate corners to match portrait orientation
             let rotatedCorners = transform.sourceCorners.map { corner -> CGPoint in
@@ -487,7 +485,7 @@ struct ARViewContainer: UIViewRepresentable {
 
             DispatchQueue.main.async {
                 self.parent.capturedFrame = capturedFrame
-                print("Captured frame updated successfully\n")
+                AppLogger.arCoordinator.info("Captured frame updated successfully")
             }
         }
     }

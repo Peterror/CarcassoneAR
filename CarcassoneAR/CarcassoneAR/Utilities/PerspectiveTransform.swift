@@ -10,6 +10,7 @@ import Foundation
 import ARKit
 import CoreImage
 import simd
+import OSLog
 
 // MARK: - Perspective Transform Calculator
 
@@ -37,7 +38,6 @@ class PerspectiveTransformCalculator {
 
         // Extract plane's local axes from transform matrix
         let xAxis = normalize(SIMD3<Float>(transform.columns.0.x, transform.columns.0.y, transform.columns.0.z))
-        let yAxis = normalize(SIMD3<Float>(transform.columns.1.x, transform.columns.1.y, transform.columns.1.z))
         let zAxis = normalize(SIMD3<Float>(transform.columns.2.x, transform.columns.2.y, transform.columns.2.z))
 
         // Apply quaternion rotation to plane's X and Z axes
@@ -387,11 +387,11 @@ class PerspectiveTransformCalculator {
             iteration += 1
         }
 
-        print("🔍 Visible square region calculation:")
-        print("  Capture center: (\(captureCenter.x), \(captureCenter.y), \(captureCenter.z))")
-        print("  Square size: \(bestSize)m × \(bestSize)m")
-        print("  Rotation quaternion: \(rotationQuaternion)")
-        print("  Iterations: \(iteration)")
+        AppLogger.transformCalculator.debug("Visible square region calculation:")
+        AppLogger.transformCalculator.debug("  Capture center: (\(captureCenter.x, format: .fixed(precision: 3)), \(captureCenter.y, format: .fixed(precision: 3)), \(captureCenter.z, format: .fixed(precision: 3)))")
+        AppLogger.transformCalculator.debug("  Square size: \(bestSize, format: .fixed(precision: 2))m × \(bestSize, format: .fixed(precision: 2))m")
+        AppLogger.transformCalculator.debug("  Rotation quaternion: \(String(describing: rotationQuaternion))")
+        AppLogger.transformCalculator.debug("  Iterations: \(iteration)")
 
         return PlaneData(
             width: bestSize,
@@ -469,7 +469,7 @@ class PerspectiveTransformCalculator {
             timestamp: Date().timeIntervalSince1970,
             quality: quality
         )
-        print("  Transform size: \(planeData.width)m × \(planeData.height)m")
+        AppLogger.transformCalculator.debug("  Transform size: \(planeData.width, format: .fixed(precision: 2))m × \(planeData.height, format: .fixed(precision: 2))m")
         return transform
     }
 }
@@ -507,17 +507,17 @@ class ImageTransformProcessor {
         transform: PerspectiveTransform
     ) -> UIImage? {
         guard let ciImage = CIImage(image: image) else {
-            print("Failed to create CIImage from UIImage")
+            AppLogger.imageProcessor.error("Failed to create CIImage from UIImage")
             return nil
         }
 
-        print("\n=== Applying CIPerspectiveCorrection Filter ===")
-        print("Input image extent: \(ciImage.extent)")
-        print("Input image size: \(ciImage.extent.size)")
+        AppLogger.imageProcessor.debug("Applying CIPerspectiveCorrection Filter")
+        AppLogger.imageProcessor.debug("Input image extent: \(String(describing: ciImage.extent))")
+        AppLogger.imageProcessor.debug("Input image size: \(String(describing: ciImage.extent.size))")
 
         // Create perspective correction filter
         guard let filter = CIFilter(name: "CIPerspectiveCorrection") else {
-            print("Failed to create CIPerspectiveCorrection filter")
+            AppLogger.imageProcessor.error("Failed to create CIPerspectiveCorrection filter")
             return nil
         }
 
@@ -528,11 +528,11 @@ class ImageTransformProcessor {
         let imageHeight = ciImage.extent.height
         let corners = transform.sourceCorners
 
-        print("Source corners (UIKit top-left origin):")
-        print("  [0] topLeft: \(corners[0])")
-        print("  [1] topRight: \(corners[1])")
-        print("  [2] bottomRight: \(corners[2])")
-        print("  [3] bottomLeft: \(corners[3])")
+        AppLogger.imageProcessor.debug("Source corners (UIKit top-left origin):")
+        AppLogger.imageProcessor.debug("  [0] topLeft: \(String(describing: corners[0]))")
+        AppLogger.imageProcessor.debug("  [1] topRight: \(String(describing: corners[1]))")
+        AppLogger.imageProcessor.debug("  [2] bottomRight: \(String(describing: corners[2]))")
+        AppLogger.imageProcessor.debug("  [3] bottomLeft: \(String(describing: corners[3]))")
 
         // Convert to Core Image coordinate system (bottom-left origin)
         let ciBottomLeft = CIVector(x: corners[3].x, y: imageHeight - corners[3].y)
@@ -540,11 +540,11 @@ class ImageTransformProcessor {
         let ciTopLeft = CIVector(x: corners[0].x, y: imageHeight - corners[0].y)
         let ciTopRight = CIVector(x: corners[1].x, y: imageHeight - corners[1].y)
 
-        print("Converted corners (Core Image bottom-left origin):")
-        print("  inputTopLeft: \(ciTopLeft)")
-        print("  inputTopRight: \(ciTopRight)")
-        print("  inputBottomRight: \(ciBottomRight)")
-        print("  inputBottomLeft: \(ciBottomLeft)")
+        AppLogger.imageProcessor.debug("Converted corners (Core Image bottom-left origin):")
+        AppLogger.imageProcessor.debug("  inputTopLeft: \(ciTopLeft)")
+        AppLogger.imageProcessor.debug("  inputTopRight: \(ciTopRight)")
+        AppLogger.imageProcessor.debug("  inputBottomRight: \(ciBottomRight)")
+        AppLogger.imageProcessor.debug("  inputBottomLeft: \(ciBottomLeft)")
 
         // Corner order: [topLeft, topRight, bottomRight, bottomLeft]
         filter.setValue(ciBottomLeft, forKey: "inputBottomLeft")
@@ -554,18 +554,18 @@ class ImageTransformProcessor {
 
         // Get output image
         guard let outputImage = filter.outputImage else {
-            print("Filter produced no output image")
+            AppLogger.imageProcessor.error("Filter produced no output image")
             return nil
         }
 
-        print("Output image extent: \(outputImage.extent)")
+        AppLogger.imageProcessor.debug("Output image extent: \(String(describing: outputImage.extent))")
 
         // Render to CGImage
         guard let cgImage = ciContext.createCGImage(
             outputImage,
             from: outputImage.extent
         ) else {
-            print("Failed to create CGImage from filtered output")
+            AppLogger.imageProcessor.error("Failed to create CGImage from filtered output")
             return nil
         }
 
@@ -573,11 +573,10 @@ class ImageTransformProcessor {
         // The input was rotated .right, so output should maintain that orientation
         let resultImage = UIImage(cgImage: cgImage, scale: 1.0, orientation: .right)
 
-        print("Perspective correction applied successfully")
-        print("  Final output size: \(resultImage.size)")
-        print("  Orientation: .right (rotated to match input)")
-        print("  Quality: \(transform.quality.qualityDescription)")
-        print("===\n")
+        AppLogger.imageProcessor.info("Perspective correction applied successfully")
+        AppLogger.imageProcessor.info("  Final output size: \(resultImage.size.width, format: .fixed(precision: 0)) × \(resultImage.size.height, format: .fixed(precision: 0))")
+        AppLogger.imageProcessor.info("  Orientation: .right (rotated to match input)")
+        AppLogger.imageProcessor.info("  Quality: \(transform.quality.qualityDescription)")
 
         return resultImage
     }

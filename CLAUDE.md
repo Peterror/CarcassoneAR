@@ -12,6 +12,8 @@ CarcassoneAR is an iOS augmented reality application that scans horizontal table
 
 ## Build Commands
 
+**IMPORTANT:** Claude Code should **NEVER** run build commands. Only the user can execute builds.
+
 ### Building the project
 ```bash
 xcodebuild -project "CarcassoneAR/CarcassoneAR.xcodeproj" -scheme CarcassoneAR -configuration Debug build
@@ -27,13 +29,15 @@ xcodebuild -project "CarcassoneAR/CarcassoneAR.xcodeproj" -scheme CarcassoneAR -
 xcodebuild -project "CarcassoneAR/CarcassoneAR.xcodeproj" -scheme CarcassoneAR clean
 ```
 
+**Note:** These commands are documented for reference only. The user will run all build operations.
+
 ## Architecture
 
 ### Application Structure
 
 The app uses a UIKit-based AppDelegate (AppDelegate.swift) as the main entry point, which hosts a SwiftUI ContentView via UIHostingController. The application follows a hierarchical SwiftUI architecture with state management for view switching and AR data coordination.
 
-### Core Components (8 Swift files)
+### Core Components (9 Swift files)
 
 #### Main Views
 - **ContentView.swift**: Master view controller managing ViewMode state (.ar or .view2D), UI overlays (status, buttons), AR/2D switching, and frame capture coordination
@@ -46,6 +50,7 @@ The app uses a UIKit-based AppDelegate (AppDelegate.swift) as the main entry poi
 
 #### Utilities
 - **PerspectiveTransform.swift**: Contains PerspectiveTransformCalculator (3D→2D projection, quality validation) and ImageTransformProcessor (Core Image perspective correction)
+- **AppLogger.swift**: Centralized logging configuration using os.Logger with category-specific loggers for structured, filterable debugging
 - **CornerMarkersOverlay.swift**: SwiftUI Canvas overlay component (structure ready for future enhancement)
 
 #### Application Entry
@@ -226,22 +231,45 @@ Requires a physical iOS device with ARKit support. The iOS Simulator does not su
 - Annotation tools and measurements (Step 14)
 - Export to Photos or Files app (Step 15)
 
-### Debugging Tips
+### Logging and Debugging
 
-**Enable Detailed Logging:**
-- Check console for "🔍 CORNER CALCULATION" messages showing 3D corner coordinates
-- Look for "🎯 2D PROJECTION" messages with pixel coordinates
-- Review "✅ QUALITY CHECK" for transformation quality metrics
-- Monitor "🖼️ IMAGE TRANSFORM" messages for processing status
+The project uses **Apple's Unified Logging** (`os.Logger`) for structured, filterable logging.
+
+**Subsystem:** `Peterror.CarcassoneAR`
+
+**Categories:**
+- `ARViewContainer.Coordinator` - AR session, frame capture, visualization
+- `ARViewContainer.PlaneDetectionDelegate` - Plane detection events
+- `PerspectiveTransformCalculator` - 3D→2D projections, quality validation
+- `ImageTransformProcessor` - Core Image perspective correction
+- `ContentView` - Main view interactions
+- `View2D` - 2D view interactions
+
+**Log Levels:** `.debug` (diagnostics), `.info` (events), `.notice` (user actions), `.error` (failures)
+
+**Filtering in Console.app:**
+
+View all app logs:
+```
+subsystem:Peterror.CarcassoneAR
+```
+
+View errors only:
+```
+subsystem:Peterror.CarcassoneAR level:error
+```
+
+View specific class:
+```
+category:ARViewContainer.Coordinator
+```
+
+Debug transformation pipeline:
+```
+category:PerspectiveTransformCalculator OR category:ImageTransformProcessor
+```
 
 **Common Issues:**
-- **"Corners not visible"**: Camera angle too extreme or plane partially off-screen
-- **"Low camera angle"**: Position device more perpendicular to plane surface
-- **"Insufficient resolution"**: Move device closer to capture region
-- **Black/corrupted image**: Check CVPixelBuffer format and Core Image coordinate conversion
-
-**Testing Recommendations:**
-- Test at various angles: 30°, 45°, 60°, 75° from horizontal
-- Verify with reference objects (ruler, rectangle) on surface
-- Check that parallel lines remain parallel in transformed output
-- Confirm consistent scale across different distances
+- **"Raycast did not hit plane"**: Camera not pointing at detected plane
+- **"Failed to create transformation"**: Corners not visible or camera angle too shallow (<20°)
+- **"Failed to create CGImage"**: CVPixelBuffer format issue or Metal unavailable
