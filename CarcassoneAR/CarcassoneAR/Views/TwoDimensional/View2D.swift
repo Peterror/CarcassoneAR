@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import OSLog
 
 struct View2D: View {
     @Binding var viewMode: ViewMode
@@ -145,7 +146,7 @@ struct View2D: View {
                         Spacer()
 
                         Button(action: {
-                            print("3D button tapped")
+                            AppLogger.view2D.notice("3D button tapped")
                             viewMode = .ar
                         }) {
                             Text("3D")
