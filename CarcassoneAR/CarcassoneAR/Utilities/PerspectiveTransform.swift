@@ -243,34 +243,9 @@ class PerspectiveTransformCalculator {
 
         let hitPointToCameraDirectionProjectedOnPlaneNormalized = normalize(hitPointToCameraDirectionProjectedOnPlane)
 
-        // Calculate rotation from plane's forward axis (Z) to projected viewing direction
-        let quaternionRotationAxis = cross(planeForwardAxisInWorldSpace, hitPointToCameraDirectionProjectedOnPlaneNormalized)
-        let angleBetweenVectorsDotProduct = dot(planeForwardAxisInWorldSpace, hitPointToCameraDirectionProjectedOnPlaneNormalized)
-        // Clamp dot product to [-1, 1] to handle floating point errors in acos
-        let angleBetweenVectorsDotProductClamped = max(-1.0, min(1.0, angleBetweenVectorsDotProduct))
-        let angleBetweenVectorsRadians = acos(angleBetweenVectorsDotProductClamped)
-
-        print("🔄 Viewing Direction Projection:")
-        print("  Camera Position: (\(String(format: "%.3f", cameraWorldPosition.x)), \(String(format: "%.3f", cameraWorldPosition.y)), \(String(format: "%.3f", cameraWorldPosition.z)))")
-        print("  Raycast Hit: (\(String(format: "%.3f", screenCenterHitWorldPosition.x)), \(String(format: "%.3f", screenCenterHitWorldPosition.y)), \(String(format: "%.3f", screenCenterHitWorldPosition.z)))")
-        print("  Viewing Direction (Hit→Camera): (\(String(format: "%.3f", hitPointToCameraDirection.x)), \(String(format: "%.3f", hitPointToCameraDirection.y)), \(String(format: "%.3f", hitPointToCameraDirection.z)))")
-        print("  Projected on Plane: (\(String(format: "%.3f", hitPointToCameraDirectionProjectedOnPlaneNormalized.x)), \(String(format: "%.3f", hitPointToCameraDirectionProjectedOnPlaneNormalized.y)), \(String(format: "%.3f", hitPointToCameraDirectionProjectedOnPlaneNormalized.z)))")
-        print("  Rotation Angle: \(String(format: "%.1f", angleBetweenVectorsRadians * 180.0 / .pi))°")
-
-        // Handle edge cases: vectors parallel or anti-parallel
-        if length(quaternionRotationAxis) < 0.001 {
-            if angleBetweenVectorsDotProduct > 0 {
-                // Vectors point in same direction - no rotation needed
-                return simd_quatf(angle: 0, axis: planeNormalAxisInWorldSpace)
-            } else {
-                // Vectors point in opposite directions - 180° rotation around normal
-                return simd_quatf(angle: .pi, axis: planeNormalAxisInWorldSpace)
-            }
-        }
-
-        // Create quaternion from axis-angle representation
-        let quaternionRotationAxisNormalized = normalize(quaternionRotationAxis)
-        return simd_quatf(angle: angleBetweenVectorsRadians, axis: quaternionRotationAxisNormalized)
+        // Create quaternion that rotates from plane's forward axis to projected viewing direction
+        // This built-in initializer handles all edge cases (parallel, anti-parallel vectors) automatically
+        return simd_quatf(from: planeForwardAxisInWorldSpace, to: hitPointToCameraDirectionProjectedOnPlaneNormalized)
     }
 
     /// Project the screen center point onto the plane's infinite geometric surface.

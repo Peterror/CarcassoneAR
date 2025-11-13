@@ -9,6 +9,7 @@ import SwiftUI
 
 struct CornerMarkersOverlay: View {
     let corners: [CGPoint]
+    let imageSize: CGSize
 
     var body: some View {
         GeometryReader { geometry in
@@ -16,24 +17,46 @@ struct CornerMarkersOverlay: View {
             let screenWidth = geometry.size.width
             let screenHeight = geometry.size.height
 
-            // ARKit camera image is 1920x1440 in landscape
-            // But displayed on screen in portrait, so we need to rotate coordinates
-            let imageWidth: CGFloat = 1920.0
-            let imageHeight: CGFloat = 1440.0
+            // Get actual camera image dimensions
+            let imageWidth = imageSize.width
+            let imageHeight = imageSize.height
 
             Canvas { context, size in
                 // Convert image coordinates to screen coordinates
-                // Camera image is 1920x1440 in landscape, displayed in portrait
-                // So we need to rotate: screen_x = imageHeight - image_y, screen_y = image_x
+                // Camera image (landscape) needs to be rotated to portrait for display
+                // Then scaled to fill screen (aspect fill), which may crop edges
 
                 let scaledCorners = corners.map { imagePoint -> CGPoint in
-                    // Rotate from landscape to portrait
+                    // Step 1: Rotate from landscape to portrait orientation
+                    // Landscape (W×H) → Portrait: x' = H - y, y' = x
                     let portraitX = imageHeight - imagePoint.y
                     let portraitY = imagePoint.x
 
-                    // Scale from image coordinates to screen coordinates
-                    let screenX = (portraitX / imageHeight) * screenWidth
-                    let screenY = (portraitY / imageWidth) * screenHeight
+                    // Step 2: Calculate how the portrait image is scaled to fill the screen
+                    // ARView uses aspect fill, so it scales to cover the entire screen
+                    let imageAspect = imageHeight / imageWidth  // Portrait image aspect ratio
+                    let screenAspect = screenHeight / screenWidth
+
+                    // Determine scale factor and visible region
+                    let scale: CGFloat
+                    let offsetX: CGFloat
+                    let offsetY: CGFloat
+
+                    if imageAspect > screenAspect {
+                        // Image is taller relative to screen - width fills, height is cropped
+                        scale = screenWidth / imageHeight
+                        offsetX = 0
+                        offsetY = (screenHeight - imageWidth * scale) / 2
+                    } else {
+                        // Image is wider relative to screen - height fills, width is cropped
+                        scale = screenHeight / imageWidth
+                        offsetX = (screenWidth - imageHeight * scale) / 2
+                        offsetY = 0
+                    }
+
+                    // Step 3: Apply scale and offset to get final screen coordinates
+                    let screenX = portraitX * scale + offsetX
+                    let screenY = portraitY * scale + offsetY
 
                     return CGPoint(x: screenX, y: screenY)
                 }

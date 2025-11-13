@@ -56,9 +56,9 @@ struct View2D: View {
                                 Canvas { context, size in
                                     let corners = frame.transform.sourceCorners
 
-                                    // Image dimensions (already in portrait after rotation)
-                                    let imageWidth: CGFloat = 1440.0  // After rotation from 1920x1440
-                                    let imageHeight: CGFloat = 1920.0
+                                    // Get actual image dimensions
+                                    let imageWidth = frame.image.size.width
+                                    let imageHeight = frame.image.size.height
 
                                     // Scale to displayed size
                                     let displayWidth = imageGeometry.size.width
