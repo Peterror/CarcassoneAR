@@ -22,6 +22,13 @@ struct ContentView: View {
     @State private var projectedCorners: [CGPoint]?
     @State private var cameraImageSize: CGSize = .zero
     @State private var pendingViewSwitch: Bool = false
+    @State private var isLandscape: Bool = {
+        // Use interface orientation, not device orientation
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+            return windowScene.interfaceOrientation.isLandscape
+        }
+        return false
+    }()
 
     var body: some View {
         ZStack {
@@ -39,7 +46,7 @@ struct ContentView: View {
 
                 // Corner markers overlay - must also ignore safe area to match ARView coordinate system
                 if let corners = projectedCorners, cameraImageSize != .zero {
-                    CornerMarkersOverlay(corners: corners, imageSize: cameraImageSize)
+                    CornerMarkersOverlay(corners: corners, imageSize: cameraImageSize, isLandscape: isLandscape)
                         .edgesIgnoringSafeArea(.all)
                 }
 
@@ -133,6 +140,28 @@ struct ContentView: View {
             if pendingViewSwitch && newValue != nil {
                 viewMode = .view2D
                 pendingViewSwitch = false
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
+            // Update orientation state when device rotates
+            // Use interface orientation (what the screen shows), not device physical orientation
+            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+                let interfaceOrientation = windowScene.interfaceOrientation
+
+                AppLogger.contentView.debug("Orientation changed - Interface: \(String(describing: interfaceOrientation))")
+
+                // Only support portrait and landscape right
+                switch interfaceOrientation {
+                case .landscapeRight:
+                    isLandscape = true
+                case .portrait:
+                    isLandscape = false
+                case .landscapeLeft, .portraitUpsideDown, .unknown:
+                    // Keep previous orientation - don't change
+                    break
+                @unknown default:
+                    break
+                }
             }
         }
     }

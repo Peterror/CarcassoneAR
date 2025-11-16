@@ -37,8 +37,8 @@ class PerspectiveTransformCalculator {
         let rotation = rotationQuaternion ?? planeData.rotationQuaternion
 
         // Extract plane's local axes from transform matrix
-        let xAxis = normalize(SIMD3<Float>(transform.columns.0.x, transform.columns.0.y, transform.columns.0.z))
-        let zAxis = normalize(SIMD3<Float>(transform.columns.2.x, transform.columns.2.y, transform.columns.2.z))
+        let xAxis = normalize(transform.columns.0.xyz)
+        let zAxis = normalize(transform.columns.2.xyz)
 
         // Apply quaternion rotation to plane's X and Z axes
         let rotatedXAxis = rotation.act(xAxis)
@@ -250,6 +250,9 @@ class PerspectiveTransformCalculator {
 
     /// Project the screen center point onto the plane's infinite geometric surface.
     ///
+    /// **NOTE: This function is currently unused.** Kept for potential future use in alternative
+    /// capture region calculation methods.
+    ///
     /// Performs ray-plane intersection to find where the center of the camera viewport
     /// intersects with the plane (extended infinitely). This allows the capture region to be
     /// centered at whatever the user is looking at, even if it's beyond the detected plane bounds.
@@ -265,45 +268,35 @@ class PerspectiveTransformCalculator {
         camera: ARCamera,
         imageResolution: CGSize
     ) -> SIMD3<Float>? {
-        // Screen center in normalized coordinates (0.5, 0.5)
+        // Screen center in pixel coordinates
         let screenCenter = CGPoint(x: imageResolution.width / 2, y: imageResolution.height / 2)
 
-        // Get camera's view matrix (inverse of camera transform)
+        // Get camera transform and projection matrix
         let cameraTransform = camera.transform
-        let viewMatrix = cameraTransform.inverse
-
-        // Get projection matrix
         let projectionMatrix = camera.projectionMatrix(for: .landscapeRight,
                                                         viewportSize: imageResolution,
-                                                        zNear: 0.001,
-                                                        zFar: 1000)
+                                                        zNear: 0.01,
+                                                        zFar: 0)
 
         // Convert screen point to normalized device coordinates (-1 to 1)
         let ndcX = (2.0 * Float(screenCenter.x) / Float(imageResolution.width)) - 1.0
         let ndcY = 1.0 - (2.0 * Float(screenCenter.y) / Float(imageResolution.height))
 
-        // Unproject to get ray direction
+        // Unproject to get ray direction in camera space, then transform to world space
         let clipCoords = SIMD4<Float>(ndcX, ndcY, -1.0, 1.0)
         let invProjection = projectionMatrix.inverse
         var eyeCoords = invProjection * clipCoords
         eyeCoords = SIMD4<Float>(eyeCoords.x, eyeCoords.y, -1.0, 0.0)
 
-        let invView = viewMatrix.inverse
-        let rayWorld = invView * eyeCoords
-        let rayDirection = normalize(SIMD3<Float>(rayWorld.x, rayWorld.y, rayWorld.z))
+        let rayWorld = cameraTransform * eyeCoords
+        let rayDirection = normalize(rayWorld.xyz)
 
         // Camera position in world space
-        let cameraPosition = SIMD3<Float>(cameraTransform.columns.3.x,
-                                           cameraTransform.columns.3.y,
-                                           cameraTransform.columns.3.z)
+        let cameraPosition = cameraTransform.columns.3.xyz
 
         // Extract plane normal and position from plane transform
-        let planeNormal = normalize(SIMD3<Float>(planeTransform.columns.1.x,
-                                                   planeTransform.columns.1.y,
-                                                   planeTransform.columns.1.z))
-        let planePosition = SIMD3<Float>(planeTransform.columns.3.x,
-                                          planeTransform.columns.3.y,
-                                          planeTransform.columns.3.z)
+        let planeNormal = normalize(planeTransform.columns.1.xyz)
+        let planePosition = planeTransform.columns.3.xyz
 
         // Ray-plane intersection: find t where ray intersects plane
         // Ray: P = cameraPosition + t * rayDirection
@@ -491,6 +484,9 @@ class ImageTransformProcessor {
     }()
 
     /// Apply perspective correction to transform an oblique camera view into an orthogonal top-down view.
+    ///
+    /// **NOTE: This function is currently unused.** Reserved for future implementation of live
+    /// perspective correction feature (PLAN.md Step 10).
     ///
     /// Uses Core Image's CIPerspectiveCorrection filter to warp the camera image based on the
     /// provided corner coordinates. This transforms the trapezoid-shaped capture region (as seen
