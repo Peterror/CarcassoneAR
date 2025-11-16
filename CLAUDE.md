@@ -8,6 +8,8 @@ CarcassoneAR is an iOS augmented reality application that scans horizontal table
 
 **Current Status**: Phase 1 complete (Steps 1-8), Step 9 (Perspective Transformation) implemented and functional.
 
+**Project Structure**: Source code is located in `./CarcassoneAR/CarcassoneAR/` (nested directory structure).
+
 @PLAN.md
 
 ## Build Commands
@@ -37,7 +39,7 @@ xcodebuild -project "CarcassoneAR/CarcassoneAR.xcodeproj" -scheme CarcassoneAR c
 
 The app uses a UIKit-based AppDelegate (AppDelegate.swift) as the main entry point, which hosts a SwiftUI ContentView via UIHostingController. The application follows a hierarchical SwiftUI architecture with state management for view switching and AR data coordination.
 
-### Core Components (9 Swift files)
+### Core Components (10 Swift files)
 
 #### Main Views
 - **ContentView.swift**: Master view controller managing ViewMode state (.ar or .view2D), UI overlays (status, buttons), AR/2D switching, and frame capture coordination
@@ -51,6 +53,7 @@ The app uses a UIKit-based AppDelegate (AppDelegate.swift) as the main entry poi
 #### Utilities
 - **PerspectiveTransform.swift**: Contains PerspectiveTransformCalculator (3D→2D projection, quality validation) and ImageTransformProcessor (Core Image perspective correction)
 - **AppLogger.swift**: Centralized logging configuration using os.Logger with category-specific loggers for structured, filterable debugging
+- **SIMDExtensions.swift**: SIMD utility extensions (simd_float4.xyz convenience property)
 - **CornerMarkersOverlay.swift**: SwiftUI Canvas overlay component (structure ready for future enhancement)
 
 #### Application Entry
@@ -141,7 +144,25 @@ ARSession → PlaneDetectionDelegate → PlaneData
 
 ### Working with Xcode Project Files
 
-This project uses Xcode's file system synchronized groups (PBXFileSystemSynchronizedRootGroup). New Swift files added to `CarcassoneAR/CarcassoneAR/` are automatically included in the build without manual project file updates.
+This project uses Xcode's file system synchronized groups (PBXFileSystemSynchronizedRootGroup).
+
+**Source Code Location**: `./CarcassoneAR/CarcassoneAR/` (note the nested directory structure)
+
+New Swift files added to `CarcassoneAR/CarcassoneAR/` are automatically included in the build without manual project file updates.
+
+**Directory Structure**:
+```
+./
+├── CarcassoneAR/                    # Xcode project container
+│   ├── CarcassoneAR.xcodeproj/     # Xcode project file
+│   └── CarcassoneAR/               # Source code directory ← CODE IS HERE
+│       ├── AppDelegate.swift
+│       ├── Models/
+│       ├── Utilities/
+│       └── Views/
+├── CLAUDE.md
+└── PLAN.md
+```
 
 ### ARKit Development Patterns
 

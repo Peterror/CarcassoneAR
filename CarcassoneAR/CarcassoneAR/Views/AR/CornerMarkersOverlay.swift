@@ -10,6 +10,7 @@ import SwiftUI
 struct CornerMarkersOverlay: View {
     let corners: [CGPoint]
     let imageSize: CGSize
+    let isLandscape: Bool
 
     var body: some View {
         GeometryReader { geometry in
@@ -23,18 +24,44 @@ struct CornerMarkersOverlay: View {
 
             Canvas { context, size in
                 // Convert image coordinates to screen coordinates
-                // Camera image (landscape) needs to be rotated to portrait for display
-                // Then scaled to fill screen (aspect fill), which may crop edges
+                // Camera image buffer is always landscape (W×H)
+                // Display can be portrait or landscape right
 
                 let scaledCorners = corners.map { imagePoint -> CGPoint in
-                    // Step 1: Rotate from landscape to portrait orientation
-                    // Landscape (W×H) → Portrait: x' = H - y, y' = x
-                    let portraitX = imageHeight - imagePoint.y
-                    let portraitY = imagePoint.x
+                    // Step 1: Rotate based on device orientation
+                    // Camera buffer is always landscape (W×H)
+                    // Corners are projected to camera buffer coordinates (landscape)
+                    let rotatedPoint: CGPoint
 
-                    // Step 2: Calculate how the portrait image is scaled to fill the screen
+                    if isLandscape {
+                        // Landscape Right: NO rotation needed!
+                        // Camera buffer is landscape, screen is landscape - coordinates match
+                        rotatedPoint = imagePoint
+                    } else {
+                        // Portrait: Rotate 90° clockwise
+                        // Landscape buffer (W×H) → Portrait display: x' = H - y, y' = x
+                        rotatedPoint = CGPoint(
+                            x: imageHeight - imagePoint.y,
+                            y: imagePoint.x
+                        )
+                    }
+
+                    // Step 2: Calculate how the rotated image is scaled to fill the screen
                     // ARView uses aspect fill, so it scales to cover the entire screen
-                    let imageAspect = imageHeight / imageWidth  // Portrait image aspect ratio
+                    let displayWidth: CGFloat
+                    let displayHeight: CGFloat
+
+                    if isLandscape {
+                        // Landscape: image dimensions match display orientation
+                        displayWidth = imageWidth
+                        displayHeight = imageHeight
+                    } else {
+                        // Portrait: image dimensions are rotated
+                        displayWidth = imageHeight
+                        displayHeight = imageWidth
+                    }
+
+                    let imageAspect = displayHeight / displayWidth
                     let screenAspect = screenHeight / screenWidth
 
                     // Determine scale factor and visible region
@@ -44,19 +71,19 @@ struct CornerMarkersOverlay: View {
 
                     if imageAspect > screenAspect {
                         // Image is taller relative to screen - width fills, height is cropped
-                        scale = screenWidth / imageHeight
+                        scale = screenWidth / displayWidth
                         offsetX = 0
-                        offsetY = (screenHeight - imageWidth * scale) / 2
+                        offsetY = (screenHeight - displayHeight * scale) / 2
                     } else {
                         // Image is wider relative to screen - height fills, width is cropped
-                        scale = screenHeight / imageWidth
-                        offsetX = (screenWidth - imageHeight * scale) / 2
+                        scale = screenHeight / displayHeight
+                        offsetX = (screenWidth - displayWidth * scale) / 2
                         offsetY = 0
                     }
 
                     // Step 3: Apply scale and offset to get final screen coordinates
-                    let screenX = portraitX * scale + offsetX
-                    let screenY = portraitY * scale + offsetY
+                    let screenX = rotatedPoint.x * scale + offsetX
+                    let screenY = rotatedPoint.y * scale + offsetY
 
                     return CGPoint(x: screenX, y: screenY)
                 }

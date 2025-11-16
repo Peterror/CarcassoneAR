@@ -10,13 +10,6 @@ import RealityKit
 import ARKit
 import OSLog
 
-// Helper extension to extract xyz from simd_float4
-extension simd_float4 {
-    var xyz: SIMD3<Float> {
-        return SIMD3<Float>(x, y, z)
-    }
-}
-
 struct ARViewContainer: UIViewRepresentable {
     @Binding var planeData: PlaneData?
     @Binding var capturedFrame: CapturedFrame?
@@ -210,18 +203,14 @@ struct ARViewContainer: UIViewRepresentable {
 
             // Extract plane position and orientation
             let planePosition = SIMD3<Float>(
-                planeAnchor.transform.columns.3.x,
-                planeAnchor.transform.columns.3.y,
-                planeAnchor.transform.columns.3.z
+                planeAnchor.transform.columns.3.xyz
             )
             let planeQuaternion = simd_quatf(planeAnchor.transform)
             let planeEuler = quaternionToEulerAngles(planeQuaternion)
 
             // Extract camera position and orientation
             let cameraPosition = SIMD3<Float>(
-                frame.camera.transform.columns.3.x,
-                frame.camera.transform.columns.3.y,
-                frame.camera.transform.columns.3.z
+                frame.camera.transform.columns.3.xyz
             )
             let cameraQuaternion = simd_quatf(frame.camera.transform)
             let cameraEuler = quaternionToEulerAngles(cameraQuaternion)
@@ -250,9 +239,7 @@ struct ARViewContainer: UIViewRepresentable {
 
             // Extract the 3D world position where the ray hit the plane
             let captureCenter = SIMD3<Float>(
-                firstResult.worldTransform.columns.3.x,
-                firstResult.worldTransform.columns.3.y,
-                firstResult.worldTransform.columns.3.z
+                firstResult.worldTransform.columns.3.xyz
             )
 
             AppLogger.arCoordinator.debug("  Raycast hit at: (\(captureCenter.x, format: .fixed(precision: 3)), \(captureCenter.y, format: .fixed(precision: 3)), \(captureCenter.z, format: .fixed(precision: 3)))")
@@ -270,7 +257,8 @@ struct ARViewContainer: UIViewRepresentable {
                 captureCenter: captureCenter,
                 rotationQuaternion: captureRegionRotationQuaternion,
                 camera: frame.camera,
-                imageResolution: imageResolution
+                imageResolution: imageResolution,
+                minDimension: 0.2
             )
 
             // Update visualization with square region at screen center
