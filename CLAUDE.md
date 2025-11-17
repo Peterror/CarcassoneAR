@@ -42,19 +42,19 @@ The app uses a UIKit-based AppDelegate (AppDelegate.swift) as the main entry poi
 ### Core Components (10 Swift files)
 
 #### Main Views
-- **ContentView.swift**: Master view controller managing ViewMode state (.ar or .view2D), UI overlays (status, buttons), AR/2D switching, and frame capture coordination
-- **View2D.swift**: Displays captured and transformed images with corner markers, quality metrics, and camera angle information
-- **ARViewContainer.swift**: UIViewRepresentable wrapper integrating RealityKit ARView with horizontal plane detection and capture functionality
+- **Views/ContentView.swift**: Master view controller managing ViewMode state (.ar or .view2D), UI overlays (status, buttons), AR/2D switching, and frame capture coordination
+- **Views/TwoDimensional/View2D.swift**: Displays captured and transformed images with corner markers, quality metrics, and camera angle information
+- **Views/AR/ARViewContainer.swift**: UIViewRepresentable wrapper integrating RealityKit ARView with horizontal plane detection and capture functionality
 
 #### Data Models
-- **PlaneData.swift**: Stores detected plane geometry (dimensions, position, transform matrix)
-- **TransformationModels.swift**: Defines PerspectiveTransform, TransformQuality, and CapturedFrame structures
+- **Models/PlaneData.swift**: Stores detected plane geometry (dimensions, position, transform matrix)
+- **Models/TransformationModels.swift**: Defines PerspectiveTransform, TransformQuality, and CapturedFrame structures
 
 #### Utilities
-- **PerspectiveTransform.swift**: Contains PerspectiveTransformCalculator (3D→2D projection, quality validation) and ImageTransformProcessor (Core Image perspective correction)
-- **AppLogger.swift**: Centralized logging configuration using os.Logger with category-specific loggers for structured, filterable debugging
-- **SIMDExtensions.swift**: SIMD utility extensions (simd_float4.xyz convenience property)
-- **CornerMarkersOverlay.swift**: SwiftUI Canvas overlay component (structure ready for future enhancement)
+- **Utilities/PerspectiveTransform.swift**: Contains PerspectiveTransformCalculator (3D→2D projection, quality validation) and ImageTransformProcessor (Core Image perspective correction)
+- **Utilities/AppLogger.swift**: Centralized logging configuration using os.Logger with category-specific loggers for structured, filterable debugging
+- **Utilities/SIMDExtensions.swift**: SIMD utility extensions (simd_float4.xyz convenience property)
+- **Views/AR/CornerMarkersOverlay.swift**: SwiftUI Canvas overlay component (structure ready for future enhancement)
 
 #### Application Entry
 - **AppDelegate.swift**: UIKit application lifecycle management
