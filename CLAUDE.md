@@ -43,8 +43,8 @@ The app uses a UIKit-based AppDelegate (AppDelegate.swift) as the main entry poi
 
 #### Main Views
 - **Views/ContentView.swift**: Master view controller managing ViewMode state (.ar or .view2D), UI overlays (status, buttons), AR/2D switching, and frame capture coordination
-- **Views/View2D.swift**: Displays captured and transformed images with corner markers, quality metrics, and camera angle information
-- **Views/ARViewContainer.swift**: UIViewRepresentable wrapper integrating RealityKit ARView with horizontal plane detection and capture functionality
+- **Views/TwoDimensional/View2D.swift**: Displays captured and transformed images with corner markers, quality metrics, and camera angle information
+- **Views/AR/ARViewContainer.swift**: UIViewRepresentable wrapper integrating RealityKit ARView with horizontal plane detection and capture functionality
 
 #### Data Models
 - **Models/PlaneData.swift**: Stores detected plane geometry (dimensions, position, transform matrix)
@@ -54,7 +54,7 @@ The app uses a UIKit-based AppDelegate (AppDelegate.swift) as the main entry poi
 - **Utilities/PerspectiveTransform.swift**: Contains PerspectiveTransformCalculator (3D→2D projection, quality validation) and ImageTransformProcessor (Core Image perspective correction)
 - **Utilities/AppLogger.swift**: Centralized logging configuration using os.Logger with category-specific loggers for structured, filterable debugging
 - **Utilities/SIMDExtensions.swift**: SIMD utility extensions (simd_float4.xyz convenience property)
-- **Views/CornerMarkersOverlay.swift**: SwiftUI Canvas overlay component (structure ready for future enhancement)
+- **Views/AR/CornerMarkersOverlay.swift**: SwiftUI Canvas overlay component (structure ready for future enhancement)
 
 #### Application Entry
 - **AppDelegate.swift**: UIKit application lifecycle management
