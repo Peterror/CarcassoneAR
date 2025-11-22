@@ -248,74 +248,6 @@ class PerspectiveTransformCalculator {
         return simd_quatf(from: planeForwardAxisInWorldSpace, to: hitPointToCameraDirectionProjectedOnPlaneNormalized)
     }
 
-    /// Project the screen center point onto the plane's infinite geometric surface.
-    ///
-    /// **NOTE: This function is currently unused.** Kept for potential future use in alternative
-    /// capture region calculation methods.
-    ///
-    /// Performs ray-plane intersection to find where the center of the camera viewport
-    /// intersects with the plane (extended infinitely). This allows the capture region to be
-    /// centered at whatever the user is looking at, even if it's beyond the detected plane bounds.
-    ///
-    /// - Parameters:
-    ///   - planeTransform: The plane's 4×4 transform matrix defining its position and orientation
-    ///   - camera: ARCamera providing projection matrix and camera parameters
-    ///   - imageResolution: Size of the camera image in pixels
-    /// - Returns: 3D world position where screen center ray intersects the plane, or nil if the
-    ///            ray is parallel to the plane (extremely rare edge case)
-    static func projectScreenCenterToPlane(
-        planeTransform: simd_float4x4,
-        camera: ARCamera,
-        imageResolution: CGSize
-    ) -> SIMD3<Float>? {
-        // Screen center in pixel coordinates
-        let screenCenter = CGPoint(x: imageResolution.width / 2, y: imageResolution.height / 2)
-
-        // Get camera transform and projection matrix
-        let cameraTransform = camera.transform
-        let projectionMatrix = camera.projectionMatrix(for: .landscapeRight,
-                                                        viewportSize: imageResolution,
-                                                        zNear: 0.01,
-                                                        zFar: 0)
-
-        // Convert screen point to normalized device coordinates (-1 to 1)
-        let ndcX = (2.0 * Float(screenCenter.x) / Float(imageResolution.width)) - 1.0
-        let ndcY = 1.0 - (2.0 * Float(screenCenter.y) / Float(imageResolution.height))
-
-        // Unproject to get ray direction in camera space, then transform to world space
-        let clipCoords = SIMD4<Float>(ndcX, ndcY, -1.0, 1.0)
-        let invProjection = projectionMatrix.inverse
-        var eyeCoords = invProjection * clipCoords
-        eyeCoords = SIMD4<Float>(eyeCoords.x, eyeCoords.y, -1.0, 0.0)
-
-        let rayWorld = cameraTransform * eyeCoords
-        let rayDirection = normalize(rayWorld.xyz)
-
-        // Camera position in world space
-        let cameraPosition = cameraTransform.columns.3.xyz
-
-        // Extract plane normal and position from plane transform
-        let planeNormal = normalize(planeTransform.columns.1.xyz)
-        let planePosition = planeTransform.columns.3.xyz
-
-        // Ray-plane intersection: find t where ray intersects plane
-        // Ray: P = cameraPosition + t * rayDirection
-        // Plane: dot(P - planePosition, planeNormal) = 0
-        let denominator = dot(rayDirection, planeNormal)
-
-        // Check if ray is parallel to plane
-        if abs(denominator) < 0.0001 {
-            return nil
-        }
-
-        let t = dot(planePosition - cameraPosition, planeNormal) / denominator
-
-        // Calculate intersection point
-        let intersectionPoint = cameraPosition + rayDirection * t
-
-        return intersectionPoint
-    }
-
     /// Calculate the largest possible square capture region centered at screen center that fits in the camera view.
     ///
     /// Uses binary search to find the maximum square size where all four corners remain visible
@@ -383,7 +315,7 @@ class PerspectiveTransformCalculator {
         AppLogger.transformCalculator.debug("Visible square region calculation:")
         AppLogger.transformCalculator.debug("  Capture center: (\(captureCenter.x, format: .fixed(precision: 3)), \(captureCenter.y, format: .fixed(precision: 3)), \(captureCenter.z, format: .fixed(precision: 3)))")
         AppLogger.transformCalculator.debug("  Square size: \(bestSize, format: .fixed(precision: 2))m × \(bestSize, format: .fixed(precision: 2))m")
-        AppLogger.transformCalculator.debug("  Rotation quaternion: \(String(describing: rotationQuaternion))")
+        AppLogger.transformCalculator.debug("  Rotation quaternion: \(String(describing: rotationQuaternion.toEulerAngles()))")
         AppLogger.transformCalculator.debug("  Iterations: \(iteration)")
 
         return PlaneData(
@@ -484,9 +416,6 @@ class ImageTransformProcessor {
     }()
 
     /// Apply perspective correction to transform an oblique camera view into an orthogonal top-down view.
-    ///
-    /// **NOTE: This function is currently unused.** Reserved for future implementation of live
-    /// perspective correction feature (PLAN.md Step 10).
     ///
     /// Uses Core Image's CIPerspectiveCorrection filter to warp the camera image based on the
     /// provided corner coordinates. This transforms the trapezoid-shaped capture region (as seen

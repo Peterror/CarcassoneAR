@@ -14,6 +14,7 @@ struct View2D: View {
 
     @State private var transformedImage: UIImage?
     @State private var isProcessing: Bool = false
+    @State private var showTransformed: Bool = true  // Default to transformed view
 
     var body: some View {
         GeometryReader { geometry in
@@ -44,16 +45,38 @@ struct View2D: View {
                             }
                         }
 
-                        // Show untransformed camera image with corner overlay
+                        // Show image based on toggle state
                         ZStack {
-                            Image(uiImage: frame.image)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(maxWidth: geometry.size.width - 40)
-                                .cornerRadius(8)
+                            if showTransformed, let transformed = transformedImage {
+                                // Show transformed (top-down) view
+                                Image(uiImage: transformed)
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fit)
+                                    .frame(maxWidth: geometry.size.width - 40)
+                                    .cornerRadius(8)
+                            } else if isProcessing {
+                                // Show processing indicator
+                                VStack {
+                                    ProgressView()
+                                        .scaleEffect(1.5)
+                                    Text("Applying transformation...")
+                                        .font(.caption)
+                                        .foregroundColor(.gray)
+                                        .padding(.top, 8)
+                                }
+                                .frame(maxWidth: geometry.size.width - 40, minHeight: 300)
+                            } else {
+                                // Show original camera image
+                                Image(uiImage: frame.image)
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fit)
+                                    .frame(maxWidth: geometry.size.width - 40)
+                                    .cornerRadius(8)
+                            }
 
-                            // Overlay corner markers on the image
-                            GeometryReader { imageGeometry in
+                            // Overlay corner markers ONLY on original view
+                            if !showTransformed || transformedImage == nil {
+                                GeometryReader { imageGeometry in
                                 Canvas { context, size in
                                     let corners = frame.transform.sourceCorners
 
@@ -106,6 +129,7 @@ struct View2D: View {
                             }
                             .frame(maxWidth: geometry.size.width - 40)
                             .aspectRatio(frame.image.size.width / frame.image.size.height, contentMode: .fit)
+                            }  // End of if !showTransformed
                         }
                         .overlay(
                             RoundedRectangle(cornerRadius: 8)
@@ -138,11 +162,31 @@ struct View2D: View {
                     }
                 }
 
-                // 3D Button positioned at bottom right
+                // Bottom button bar with Toggle and 3D buttons
                 VStack {
                     Spacer()
 
                     HStack {
+                        // Toggle button (only shown when frame is captured)
+                        if capturedFrame != nil {
+                            Button(action: {
+                                AppLogger.view2D.notice("Toggle view button tapped - switching to \(showTransformed ? "original" : "transformed")")
+                                showTransformed.toggle()
+                            }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: showTransformed ? "photo" : "grid")
+                                    Text(showTransformed ? "Original" : "Top-Down")
+                                }
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 20)
+                                .padding(.vertical, 12)
+                                .background(Color.blue.opacity(0.7))
+                                .cornerRadius(10)
+                            }
+                            .disabled(isProcessing)
+                        }
+
                         Spacer()
 
                         Button(action: {
@@ -161,6 +205,35 @@ struct View2D: View {
                     .padding(.horizontal, 20)
                     .padding(.bottom, 50)
                 }
+            }
+        }
+        .task(id: capturedFrame?.transform.timestamp) {
+            // Apply perspective transformation when a new frame is captured
+            guard let frame = capturedFrame else {
+                transformedImage = nil
+                return
+            }
+
+            // Reset state for new frame
+            transformedImage = nil
+            isProcessing = true
+
+            AppLogger.view2D.info("Starting perspective transformation...")
+
+            // Perform transformation (runs on main actor)
+            let result = ImageTransformProcessor.applyPerspectiveCorrection(
+                image: frame.image,
+                transform: frame.transform
+            )
+
+            // Update state
+            self.transformedImage = result
+            self.isProcessing = false
+
+            if result != nil {
+                AppLogger.view2D.info("Perspective transformation completed successfully")
+            } else {
+                AppLogger.view2D.error("Perspective transformation failed")
             }
         }
     }
