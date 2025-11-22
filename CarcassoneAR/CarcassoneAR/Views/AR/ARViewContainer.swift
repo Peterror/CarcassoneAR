@@ -11,7 +11,7 @@ import ARKit
 import OSLog
 
 struct ARViewContainer: UIViewRepresentable {
-    @Binding var planeData: PlaneData?
+    @Binding var lockedPlane: PlaneData?
     @Binding var capturedFrame: CapturedFrame?
     @Binding var resetTrigger: Bool
     @Binding var captureNow: Bool
@@ -24,6 +24,12 @@ struct ARViewContainer: UIViewRepresentable {
         // Store reference in coordinator
         context.coordinator.arView = arView
 
+        // Store bindings in coordinator
+        context.coordinator.lockedPlaneDataBinding = $lockedPlane
+        context.coordinator.projectedCornersBinding = $projectedCorners
+        context.coordinator.cameraImageSizeBinding = $cameraImageSize
+        context.coordinator.capturedFrameBinding = $capturedFrame
+
         // Start AR session
         let configuration = ARWorldTrackingConfiguration()
         configuration.planeDetection = [.horizontal]
@@ -33,9 +39,15 @@ struct ARViewContainer: UIViewRepresentable {
     }
 
     func updateUIView(_ arView: ARView, context: Context) {
+        // Update bindings in case they changed (though they shouldn't in this case)
+        context.coordinator.lockedPlaneDataBinding = $lockedPlane
+        context.coordinator.projectedCornersBinding = $projectedCorners
+        context.coordinator.cameraImageSizeBinding = $cameraImageSize
+        context.coordinator.capturedFrameBinding = $capturedFrame
+
         // Set up session delegate if not already set
         if context.coordinator.sessionDelegate == nil {
-            let delegate = PlaneDetectionDelegate(coordinator: context.coordinator, parent: self)
+            let delegate = PlaneDetectionDelegate(coordinator: context.coordinator)
             arView.session.delegate = delegate
             context.coordinator.sessionDelegate = delegate
         }
@@ -63,24 +75,23 @@ struct ARViewContainer: UIViewRepresentable {
             AppLogger.arCoordinator.info("Reset: Unlocked plane, ready to detect new surface")
 
             DispatchQueue.main.async {
-                planeData = nil
+                lockedPlane = nil
                 resetTrigger = false
             }
         }
     }
 
+    // TODO read how other projects use this
     func makeCoordinator() -> Coordinator {
-        Coordinator(self)
+        Coordinator()
     }
 
     // ARSession delegate to handle plane detection events
     class PlaneDetectionDelegate: NSObject, ARSessionDelegate {
         weak var coordinator: Coordinator?
-        var parent: ARViewContainer
 
-        init(coordinator: Coordinator, parent: ARViewContainer) {
+        init(coordinator: Coordinator) {
             self.coordinator = coordinator
-            self.parent = parent
         }
 
         func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
@@ -96,10 +107,8 @@ struct ARViewContainer: UIViewRepresentable {
                         coordinator.lockedPlaneID = planeAnchor.identifier
                         coordinator.lockedPlaneTransform = planeAnchor.transform
 
-                        guard let arView = coordinator.arView else { return }
-
                         // Calculate and update screen-centered capture region
-                        coordinator.updateScreenCenteredCaptureRegion(arView: arView, planeAnchor: planeAnchor)
+                        coordinator.updateScreenCenteredCaptureRegion(planeAnchor: nil)
                     }
                 }
             }
@@ -112,70 +121,32 @@ struct ARViewContainer: UIViewRepresentable {
 
                     // Only update if this is our locked plane
                     if coordinator.lockedPlaneID == planeAnchor.identifier {
-                        guard let arView = coordinator.arView else { return }
-
                         // Update locked plane transform as ARKit refines it
                         coordinator.lockedPlaneTransform = planeAnchor.transform
 
-                        // Recalculate screen-centered capture region (follows camera movement)
-                        coordinator.updateScreenCenteredCaptureRegion(arView: arView, planeAnchor: planeAnchor)
                     }
+                    // Recalculate screen-centered capture region (follows camera movement)
+                    coordinator.updateScreenCenteredCaptureRegion(planeAnchor: nil)
                 }
             }
         }
     }
 
     class Coordinator {
-        var parent: ARViewContainer
-        var arView: ARView?
+        var arView: ARView!  // Implicitly unwrapped - always set in makeUIView before use
         var planeEntities: [UUID: AnchorEntity] = [:]
         var sessionDelegate: PlaneDetectionDelegate?
         var lockedPlaneID: UUID?
         var lockedPlaneTransform: simd_float4x4?  // Store locked plane's transform
         var currentPlaneData: PlaneData?  // Store plane data in coordinator
 
-        init(_ parent: ARViewContainer) {
-            self.parent = parent
-        }
+        // Store bindings directly to avoid stale parent struct
+        var lockedPlaneDataBinding: Binding<PlaneData?>!
+        var projectedCornersBinding: Binding<[CGPoint]?>!
+        var cameraImageSizeBinding: Binding<CGSize>!
+        var capturedFrameBinding: Binding<CapturedFrame?>!
 
-        /// Convert quaternion to Euler angles (in degrees) using ARKit's rotation order.
-        ///
-        /// ARKit applies rotations in the order: Roll (X) → Pitch (Y) → Yaw (Z).
-        /// This function extracts Euler angles from a quaternion using the XYZ convention
-        /// to match ARKit's coordinate system and rotation order.
-        ///
-        /// - Parameter q: The quaternion to convert
-        /// - Returns: SIMD3<Float> containing (roll, pitch, yaw) in degrees
-        func quaternionToEulerAngles(_ q: simd_quatf) -> SIMD3<Float> {
-            // Extract quaternion components
-            let w = q.vector.w
-            let x = q.vector.x
-            let y = q.vector.y
-            let z = q.vector.z
-
-            // Roll (X-axis rotation) - applied first
-            let sinr_cosp = 2 * (w * x + y * z)
-            let cosr_cosp = 1 - 2 * (x * x + y * y)
-            let roll = atan2(sinr_cosp, cosr_cosp)
-
-            // Pitch (Y-axis rotation) - applied second
-            let sinp = 2 * (w * y - z * x)
-            let pitch: Float
-            if abs(sinp) >= 1 {
-                // Gimbal lock case: use ±90 degrees
-                pitch = copysign(.pi / 2, sinp)
-            } else {
-                pitch = asin(sinp)
-            }
-
-            // Yaw (Z-axis rotation) - applied third
-            let siny_cosp = 2 * (w * z + x * y)
-            let cosy_cosp = 1 - 2 * (y * y + z * z)
-            let yaw = atan2(siny_cosp, cosy_cosp)
-
-            // Convert radians to degrees
-            let radToDeg: Float = 180.0 / .pi
-            return SIMD3<Float>(roll * radToDeg, pitch * radToDeg, yaw * radToDeg)
+        init() {
         }
 
         /// Calculate and update the screen-centered capture region with phone-aligned rotation.
@@ -191,35 +162,15 @@ struct ARViewContainer: UIViewRepresentable {
         /// the capture region always reflects the current screen center and phone orientation.
         ///
         /// - Parameters:
-        ///   - arView: The ARView instance containing the AR session
-        ///   - planeAnchor: The detected plane anchor (locked plane)
-        func updateScreenCenteredCaptureRegion(arView: ARView, planeAnchor: ARPlaneAnchor) {
+        ///   - planeAnchor: The detected plane anchor (locked plane). If nil, the method will attempt to extract it from the raycast result.
+        func updateScreenCenteredCaptureRegion(planeAnchor: ARPlaneAnchor?) {
             guard let frame = arView.session.currentFrame else { return }
-
+            if (lockedPlaneID == nil) { return }  // If no plane locked, return
+            
             let imageResolution = CGSize(
                 width: CGFloat(CVPixelBufferGetWidth(frame.capturedImage)),
                 height: CGFloat(CVPixelBufferGetHeight(frame.capturedImage))
             )
-
-            // Extract plane position and orientation
-            let planePosition = SIMD3<Float>(
-                planeAnchor.transform.columns.3.xyz
-            )
-            let planeQuaternion = simd_quatf(planeAnchor.transform)
-            let planeEuler = quaternionToEulerAngles(planeQuaternion)
-
-            // Extract camera position and orientation
-            let cameraPosition = SIMD3<Float>(
-                frame.camera.transform.columns.3.xyz
-            )
-            let cameraQuaternion = simd_quatf(frame.camera.transform)
-            let cameraEuler = quaternionToEulerAngles(cameraQuaternion)
-
-            AppLogger.arCoordinator.debug("Plane & Camera Transforms:")
-            AppLogger.arCoordinator.debug("  Plane Position: (\(planePosition.x, format: .fixed(precision: 3)), \(planePosition.y, format: .fixed(precision: 3)), \(planePosition.z, format: .fixed(precision: 3)))")
-            AppLogger.arCoordinator.debug("  Plane Euler (deg): Roll=\(planeEuler.x, format: .fixed(precision: 1))°, Pitch=\(planeEuler.y, format: .fixed(precision: 1))°, Yaw=\(planeEuler.z, format: .fixed(precision: 1))°")
-            AppLogger.arCoordinator.debug("  Camera Position: (\(cameraPosition.x, format: .fixed(precision: 3)), \(cameraPosition.y, format: .fixed(precision: 3)), \(cameraPosition.z, format: .fixed(precision: 3)))")
-            AppLogger.arCoordinator.debug("  Camera Euler (deg): Roll=\(cameraEuler.x, format: .fixed(precision: 1))°, Pitch=\(cameraEuler.y, format: .fixed(precision: 1))°, Yaw=\(cameraEuler.z, format: .fixed(precision: 1))°")
 
             // Use ARRaycastQuery to find where screen center intersects the plane
             // Create raycast query for existing plane geometry
@@ -237,6 +188,40 @@ struct ARViewContainer: UIViewRepresentable {
                 return
             }
 
+            // Extract plane anchor from raycast result if not provided
+            let resolvedPlaneAnchor: ARPlaneAnchor
+            if let providedAnchor = planeAnchor {
+                resolvedPlaneAnchor = providedAnchor
+            } else {
+                // Try to extract plane anchor from raycast result
+                guard let anchor = firstResult.anchor as? ARPlaneAnchor else {
+                    AppLogger.arCoordinator.error("Raycast result does not contain a plane anchor")
+                    return
+                }
+                resolvedPlaneAnchor = anchor
+                AppLogger.arCoordinator.debug("Extracted plane anchor from raycast result")
+            }
+
+            // Extract plane position and orientation
+            let planePosition = SIMD3<Float>(
+                resolvedPlaneAnchor.transform.columns.3.xyz
+            )
+            let planeQuaternion = simd_quatf(resolvedPlaneAnchor.transform)
+            let planeEuler = planeQuaternion.toEulerAngles()
+
+            // Extract camera position and orientation
+            let cameraPosition = SIMD3<Float>(
+                frame.camera.transform.columns.3.xyz
+            )
+            let cameraQuaternion = simd_quatf(frame.camera.transform)
+            let cameraEuler = cameraQuaternion.toEulerAngles()
+
+            AppLogger.arCoordinator.debug("Plane & Camera Transforms:")
+            AppLogger.arCoordinator.debug("  Plane Position: (\(planePosition.x, format: .fixed(precision: 3)), \(planePosition.y, format: .fixed(precision: 3)), \(planePosition.z, format: .fixed(precision: 3)))")
+            AppLogger.arCoordinator.debug("  Plane Euler (deg): Roll=\(planeEuler.x, format: .fixed(precision: 1))°, Pitch=\(planeEuler.y, format: .fixed(precision: 1))°, Yaw=\(planeEuler.z, format: .fixed(precision: 1))°")
+            AppLogger.arCoordinator.debug("  Camera Position: (\(cameraPosition.x, format: .fixed(precision: 3)), \(cameraPosition.y, format: .fixed(precision: 3)), \(cameraPosition.z, format: .fixed(precision: 3)))")
+            AppLogger.arCoordinator.debug("  Camera Euler (deg): Roll=\(cameraEuler.x, format: .fixed(precision: 1))°, Pitch=\(cameraEuler.y, format: .fixed(precision: 1))°, Yaw=\(cameraEuler.z, format: .fixed(precision: 1))°")
+
             // Extract the 3D world position where the ray hit the plane
             let captureCenter = SIMD3<Float>(
                 firstResult.worldTransform.columns.3.xyz
@@ -246,14 +231,14 @@ struct ARViewContainer: UIViewRepresentable {
 
             // Calculate rotation quaternion using viewing direction (camera → raycast hit)
             let captureRegionRotationQuaternion = PerspectiveTransformCalculator.calculateRotationFromViewingDirection(
-                planeTransform: planeAnchor.transform,
+                planeTransform: resolvedPlaneAnchor.transform,
                 cameraWorldPosition: cameraPosition,
                 screenCenterHitWorldPosition: captureCenter
             )
 
             // Calculate largest square region that fits in view
             let squareRegionData = PerspectiveTransformCalculator.calculateVisibleSquareRegion(
-                planeTransform: planeAnchor.transform,
+                planeTransform: resolvedPlaneAnchor.transform,
                 captureCenter: captureCenter,
                 rotationQuaternion: captureRegionRotationQuaternion,
                 camera: frame.camera,
@@ -263,8 +248,7 @@ struct ARViewContainer: UIViewRepresentable {
 
             // Update visualization with square region at screen center
             updatePlaneVisualization(
-                arView: arView,
-                planeAnchor: planeAnchor,
+                planeAnchor: resolvedPlaneAnchor,
                 captureCenter: captureCenter,
                 rotationQuaternion: squareRegionData.rotationQuaternion,
                 width: squareRegionData.width,
@@ -282,13 +266,12 @@ struct ARViewContainer: UIViewRepresentable {
                 imageResolution: imageResolution
             )
 
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                self.currentPlaneData = squareRegionData
-                self.parent.planeData = squareRegionData
-                self.parent.projectedCorners = corners2D
-                self.parent.cameraImageSize = imageResolution
-            }
+            // Update coordinator state and bindings immediately
+            // ARSession delegate runs on main thread in iOS 26+
+            currentPlaneData = squareRegionData
+            lockedPlaneDataBinding.wrappedValue = squareRegionData
+            projectedCornersBinding.wrappedValue = corners2D
+            cameraImageSizeBinding.wrappedValue = imageResolution
         }
 
         /// Update the 3D visualization of the capture region in the AR scene.
@@ -302,14 +285,12 @@ struct ARViewContainer: UIViewRepresentable {
         /// Both visualizations are anchored to the detected plane's coordinate system.
         ///
         /// - Parameters:
-        ///   - arView: The ARView instance to add/update entities in
         ///   - planeAnchor: The detected plane anchor providing the coordinate system
         ///   - captureCenter: 3D world position where the capture region is centered (currently unused for fixed visualization)
         ///   - rotationQuaternion: Quaternion rotation (currently unused for fixed visualization)
         ///   - width: Width of the capture region in meters
         ///   - height: Height of the capture region in meters
         func updatePlaneVisualization(
-            arView: ARView,
             planeAnchor: ARPlaneAnchor,
             captureCenter: SIMD3<Float>,
             rotationQuaternion: simd_quatf,
@@ -378,28 +359,28 @@ struct ARViewContainer: UIViewRepresentable {
         /// Capture the current camera frame and create a perspective transformation for it.
         ///
         /// This method is called when the user taps the "2D" button to capture the current view.
-        /// It performs the following steps:
+        /// It reuses the transformation data already calculated in updateScreenCenteredCaptureRegion():
         /// 1. Captures the raw camera image from ARSession
         /// 2. Converts CVPixelBuffer to UIImage with correct orientation
-        /// 3. Creates a PerspectiveTransform using the stored capture region data
+        /// 3. Uses already-calculated corner positions from parent.projectedCorners
         /// 4. Rotates corner coordinates to match portrait orientation
         /// 5. Packages everything into a CapturedFrame for display in View2D
         ///
-        /// The transformation data includes corner positions, quality metrics, and the plane geometry,
-        /// which can later be used to apply perspective correction and show a top-down orthogonal view.
+        /// Note: Most transformation calculations are done in updateScreenCenteredCaptureRegion(),
+        /// so this method simply captures the image and packages the pre-calculated data.
         func captureCameraFrameWithTransform() {
-            guard let arView = arView else {
-                AppLogger.arCoordinator.error("arView is nil")
-                return
-            }
-
             guard let frame = arView.session.currentFrame else {
                 AppLogger.arCoordinator.error("arView.session.currentFrame is nil")
                 return
             }
 
             guard let planeData = currentPlaneData else {
-                AppLogger.arCoordinator.error("currentPlaneData is nil")
+                AppLogger.arCoordinator.error("currentPlaneData is nil - no plane detected")
+                return
+            }
+
+            guard let corners2D = projectedCornersBinding.wrappedValue else {
+                AppLogger.arCoordinator.error("projectedCorners is nil - transformation not calculated")
                 return
             }
 
@@ -422,45 +403,56 @@ struct ARViewContainer: UIViewRepresentable {
             let uiImage = UIImage(cgImage: cgImage, scale: 1.0, orientation: .right)
             AppLogger.arCoordinator.info("Camera image captured: \(uiImage.size.width, format: .fixed(precision: 0)) × \(uiImage.size.height, format: .fixed(precision: 0))")
 
-            // Get image resolution for projection calculations
-            let bufferWidth = CVPixelBufferGetWidth(pixelBuffer)
-            let bufferHeight = CVPixelBufferGetHeight(pixelBuffer)
-            let imageResolution = CGSize(
-                width: CGFloat(bufferWidth),
-                height: CGFloat(bufferHeight)
+            // Use already-calculated image resolution from bindings
+            let imageResolution = cameraImageSizeBinding.wrappedValue
+            AppLogger.arCoordinator.debug("Using cached image resolution: \(imageResolution.width, format: .fixed(precision: 0)) × \(imageResolution.height, format: .fixed(precision: 0))")
+
+            // Calculate quality metrics (these are cheap calculations)
+            let cameraAngle = PerspectiveTransformCalculator.calculateCameraAngle(
+                planeTransform: planeData.transform,
+                cameraTransform: frame.camera.transform
             )
-            AppLogger.arCoordinator.debug("Pixel buffer dimensions: \(bufferWidth) × \(bufferHeight)")
 
-            // Calculate perspective transformation
-            guard var transform = PerspectiveTransformCalculator.createTransform(
+            let allVisible = PerspectiveTransformCalculator.areAllCornersVisible(
+                corners: corners2D,
+                imageSize: imageResolution
+            )
+
+            let outputSize = PerspectiveTransformCalculator.calculateOutputSize(
                 planeData: planeData,
-                camera: frame.camera,
-                cameraTransform: frame.camera.transform,
-                imageResolution: imageResolution,
-                outputMaxWidth: 2048
-            ) else {
-                AppLogger.arCoordinator.error("Failed to create transformation")
-                return
-            }
+                maxWidth: 2048
+            )
 
-            AppLogger.arCoordinator.info("Transformation calculated:")
-            AppLogger.arCoordinator.info("  Camera angle: \(transform.quality.cameraAngleDegrees, format: .fixed(precision: 1))°")
-            AppLogger.arCoordinator.info("  Quality: \(transform.quality.qualityDescription)")
+            let pixelsPerMeter = PerspectiveTransformCalculator.estimatePixelsPerMeter(
+                planeData: planeData,
+                outputSize: outputSize
+            )
+
+            let quality = TransformQuality(
+                cameraAngleDegrees: cameraAngle,
+                allCornersVisible: allVisible,
+                estimatedPixelsPerMeter: pixelsPerMeter
+            )
+
+            AppLogger.arCoordinator.info("Transformation quality:")
+            AppLogger.arCoordinator.info("  Camera angle: \(quality.cameraAngleDegrees, format: .fixed(precision: 1))°")
+            AppLogger.arCoordinator.info("  Quality: \(quality.qualityDescription)")
 
             // Rotate corners to match portrait orientation
-            let rotatedCorners = transform.sourceCorners.map { corner -> CGPoint in
+            // corners2D are in landscape orientation (from ARCamera), convert to portrait
+            let rotatedCorners = corners2D.map { corner -> CGPoint in
                 CGPoint(
                     x: imageResolution.height - corner.y,
                     y: corner.x
                 )
             }
 
-            // Update transform with rotated corners
-            transform = PerspectiveTransform(
+            // Create transform with rotated corners
+            let transform = PerspectiveTransform(
                 sourceCorners: rotatedCorners,
-                destinationSize: transform.destinationSize,
-                timestamp: transform.timestamp,
-                quality: transform.quality
+                destinationSize: outputSize,
+                timestamp: Date().timeIntervalSince1970,
+                quality: quality
             )
 
             // Create captured frame
@@ -471,8 +463,9 @@ struct ARViewContainer: UIViewRepresentable {
                 cameraTransform: frame.camera.transform
             )
 
+            // Update binding asynchronously to avoid "modifying state during view update" warning
             DispatchQueue.main.async {
-                self.parent.capturedFrame = capturedFrame
+                self.capturedFrameBinding.wrappedValue = capturedFrame
                 AppLogger.arCoordinator.info("Captured frame updated successfully")
             }
         }

@@ -16,26 +16,20 @@ enum ViewMode {
 struct ContentView: View {
     @State private var viewMode: ViewMode = .ar
     @State private var resetTrigger: Bool = false
-    @State private var planeData: PlaneData?
+    @State private var lockedPlane: PlaneData?
     @State private var capturedFrame: CapturedFrame?
     @State private var captureNow: Bool = false
     @State private var projectedCorners: [CGPoint]?
     @State private var cameraImageSize: CGSize = .zero
     @State private var pendingViewSwitch: Bool = false
-    @State private var isLandscape: Bool = {
-        // Use interface orientation, not device orientation
-        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
-            return windowScene.interfaceOrientation.isLandscape
-        }
-        return false
-    }()
 
     var body: some View {
-        ZStack {
-            // AR Camera View - Only render when in AR mode
-            if viewMode == .ar {
+        GeometryReader { geometry in
+            ZStack {
+                // AR Camera View - Only render when in AR mode
+                if viewMode == .ar {
                 ARViewContainer(
-                    planeData: $planeData,
+                    lockedPlane: $lockedPlane,
                     capturedFrame: $capturedFrame,
                     resetTrigger: $resetTrigger,
                     captureNow: $captureNow,
@@ -46,7 +40,7 @@ struct ContentView: View {
 
                 // Corner markers overlay - must also ignore safe area to match ARView coordinate system
                 if let corners = projectedCorners, cameraImageSize != .zero {
-                    CornerMarkersOverlay(corners: corners, imageSize: cameraImageSize, isLandscape: isLandscape)
+                    CornerMarkersOverlay(corners: corners, imageSize: cameraImageSize)
                         .edgesIgnoringSafeArea(.all)
                 }
 
@@ -56,7 +50,7 @@ struct ContentView: View {
                     HStack {
                         Spacer()
 
-                        if planeData != nil {
+                        if lockedPlane != nil {
                             // Plane detected
                             HStack(spacing: 8) {
                                 Circle()
@@ -118,14 +112,14 @@ struct ContentView: View {
                         }) {
                             Text("2D")
                                 .font(.system(size: 16, weight: .semibold))
-                                .foregroundColor(planeData != nil ? .white : .gray)
+                                .foregroundColor(lockedPlane != nil ? .white : .gray)
                                 .padding(.horizontal, 20)
                                 .padding(.vertical, 12)
-                                .background(planeData != nil ? Color.black.opacity(0.7) : Color.black.opacity(0.3))
+                                .background(lockedPlane != nil ? Color.black.opacity(0.7) : Color.black.opacity(0.3))
                                 .cornerRadius(12)
                                 .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
                         }
-                        .disabled(planeData == nil)
+                        .disabled(lockedPlane == nil)
                     }
                     .padding(.horizontal, 20)
                     .padding(.bottom, 50)
@@ -142,27 +136,6 @@ struct ContentView: View {
                 pendingViewSwitch = false
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
-            // Update orientation state when device rotates
-            // Use interface orientation (what the screen shows), not device physical orientation
-            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
-                let interfaceOrientation = windowScene.interfaceOrientation
-
-                AppLogger.contentView.debug("Orientation changed - Interface: \(String(describing: interfaceOrientation))")
-
-                // Only support portrait and landscape right
-                switch interfaceOrientation {
-                case .landscapeRight:
-                    isLandscape = true
-                case .portrait:
-                    isLandscape = false
-                case .landscapeLeft, .portraitUpsideDown, .unknown:
-                    // Keep previous orientation - don't change
-                    break
-                @unknown default:
-                    break
-                }
-            }
         }
     }
 }

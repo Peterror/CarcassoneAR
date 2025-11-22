@@ -10,10 +10,12 @@ import SwiftUI
 struct CornerMarkersOverlay: View {
     let corners: [CGPoint]
     let imageSize: CGSize
-    let isLandscape: Bool
 
     var body: some View {
         GeometryReader { geometry in
+            // Determine orientation from geometry
+            let isLandscape = geometry.size.width > geometry.size.height
+
             // Get the screen dimensions
             let screenWidth = geometry.size.width
             let screenHeight = geometry.size.height
@@ -26,7 +28,6 @@ struct CornerMarkersOverlay: View {
                 // Convert image coordinates to screen coordinates
                 // Camera image buffer is always landscape (W×H)
                 // Display can be portrait or landscape right
-
                 let scaledCorners = corners.map { imagePoint -> CGPoint in
                     // Step 1: Rotate based on device orientation
                     // Camera buffer is always landscape (W×H)
