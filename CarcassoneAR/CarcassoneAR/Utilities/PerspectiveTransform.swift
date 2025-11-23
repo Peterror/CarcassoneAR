@@ -327,76 +327,6 @@ class PerspectiveTransformCalculator {
         )
     }
 
-    /// Create a complete perspective transformation with quality validation.
-    ///
-    /// Orchestrates the full transformation pipeline: calculates corners with rotation, projects them
-    /// to the camera image, computes output dimensions, evaluates quality metrics, and packages
-    /// everything into a PerspectiveTransform structure. This is the main entry point for creating
-    /// transformations during image capture.
-    ///
-    /// - Parameters:
-    ///   - planeData: Contains plane dimensions, position, transform, and rotation quaternion
-    ///   - camera: ARCamera from the current frame for projection
-    ///   - cameraTransform: Camera's 4×4 transform matrix for angle calculation
-    ///   - imageResolution: Camera image size in pixels
-    ///   - outputMaxWidth: Maximum output image width in pixels. Defaults to 2048px
-    /// - Returns: PerspectiveTransform containing source corners, output dimensions, quality metrics,
-    ///            and timestamp, or nil if transformation creation fails
-    static func createTransform(
-        planeData: PlaneData,
-        camera: ARCamera,
-        cameraTransform: simd_float4x4,
-        imageResolution: CGSize,
-        outputMaxWidth: CGFloat = 2048
-    ) -> PerspectiveTransform? {
-        // Calculate 3D corners with rotation applied (uses planeData.rotationQuaternion by default)
-        let corners3D = calculatePlaneCorners(planeData: planeData)
-
-        // Project to 2D image coordinates
-        let corners2D = projectCornersToImage(
-            corners3D: corners3D,
-            camera: camera,
-            imageResolution: imageResolution
-        )
-
-        // Calculate output dimensions
-        let outputSize = calculateOutputSize(
-            planeData: planeData,
-            maxWidth: outputMaxWidth
-        )
-
-        // Calculate quality metrics
-        let cameraAngle = calculateCameraAngle(
-            planeTransform: planeData.transform,
-            cameraTransform: cameraTransform
-        )
-
-        let allVisible = areAllCornersVisible(
-            corners: corners2D,
-            imageSize: imageResolution
-        )
-
-        let pixelsPerMeter = estimatePixelsPerMeter(
-            planeData: planeData,
-            outputSize: outputSize
-        )
-
-        let quality = TransformQuality(
-            cameraAngleDegrees: cameraAngle,
-            allCornersVisible: allVisible,
-            estimatedPixelsPerMeter: pixelsPerMeter
-        )
-
-        // Create transformation
-        let transform = PerspectiveTransform(
-            sourceCorners: corners2D,
-            destinationSize: outputSize,
-            timestamp: Date().timeIntervalSince1970,
-            quality: quality
-        )
-        AppLogger.transformCalculator.debug("  Transform size: \(planeData.width, format: .fixed(precision: 2))m × \(planeData.height, format: .fixed(precision: 2))m")
-        return transform
-    }
 }
 
 // MARK: - Image Transform Processor
@@ -422,23 +352,82 @@ class ImageTransformProcessor {
     /// from the oblique camera angle) into a rectangular output image showing a true top-down view.
     /// The transformation is GPU-accelerated using Metal for optimal performance.
     ///
+    /// **Coordinate System Strategy:**
+    /// - Input image comes with `.right` orientation (portrait mode, rotated 90° CW from landscape)
+    /// - Input corners are already rotated to match the portrait-oriented image coordinate system
+    /// - We work directly with the portrait image's pixel buffer (ignoring UIImage orientation metadata)
+    /// - Core Image uses bottom-left origin, so we flip Y coordinates
+    /// - Output is created with `.up` (no rotation) since the pixel buffer is already correctly oriented
+    ///
     /// - Parameters:
-    ///   - image: The raw camera image (oblique view) to be corrected
-    ///   - transform: PerspectiveTransform containing source corner positions and output dimensions
+    ///   - image: The raw camera image (oblique view) to be corrected, with `.right` orientation
+    ///   - perspectiveTransform: PerspectiveTransform containing source corner positions (in portrait coordinates) and output dimensions
     /// - Returns: Perspective-corrected UIImage showing orthogonal top-down view, or nil if the
     ///            transformation fails (e.g., invalid corners or Core Image errors)
     static func applyPerspectiveCorrection(
         image: UIImage,
-        transform: PerspectiveTransform
+        perspectiveTransform: PerspectiveTransform
     ) -> UIImage? {
-        guard let ciImage = CIImage(image: image) else {
-            AppLogger.imageProcessor.error("Failed to create CIImage from UIImage")
+        AppLogger.imageProcessor.info("═══════════════════════════════════════════════════════")
+        AppLogger.imageProcessor.info("Starting Perspective Correction")
+        AppLogger.imageProcessor.info("═══════════════════════════════════════════════════════")
+
+        // Log input image details
+        AppLogger.imageProcessor.debug("Input UIImage Details:")
+        AppLogger.imageProcessor.debug("  UIImage.size: \(image.size.width, format: .fixed(precision: 0)) × \(image.size.height, format: .fixed(precision: 0))")
+        AppLogger.imageProcessor.debug("  UIImage.scale: \(image.scale, format: .fixed(precision: 1))")
+        AppLogger.imageProcessor.debug("  UIImage.orientation: \(String(describing: image.imageOrientation)) (rawValue: \(image.imageOrientation.rawValue))")
+
+        guard let cgImageSource = image.cgImage else {
+            AppLogger.imageProcessor.error("Failed to extract CGImage from UIImage")
             return nil
         }
 
-        AppLogger.imageProcessor.debug("Applying CIPerspectiveCorrection Filter")
-        AppLogger.imageProcessor.debug("Input image extent: \(String(describing: ciImage.extent))")
-        AppLogger.imageProcessor.debug("Input image size: \(String(describing: ciImage.extent.size))")
+        AppLogger.imageProcessor.debug("  CGImage.width: \(cgImageSource.width)")
+        AppLogger.imageProcessor.debug("  CGImage.height: \(cgImageSource.height)")
+
+        // Create CIImage directly from CGImage to bypass orientation metadata
+        // This gives us the actual pixel buffer dimensions
+        let ciImage = CIImage(cgImage: cgImageSource)
+
+        AppLogger.imageProcessor.debug("CIImage Details:")
+        AppLogger.imageProcessor.debug("  CIImage.extent: \(String(describing: ciImage.extent))")
+        AppLogger.imageProcessor.debug("  CIImage.extent.size: \(ciImage.extent.width, format: .fixed(precision: 0)) × \(ciImage.extent.height, format: .fixed(precision: 0))")
+
+        // Get actual pixel buffer dimensions (this is what Core Image will work with)
+        let imageWidth = ciImage.extent.width
+        let imageHeight = ciImage.extent.height
+
+        AppLogger.imageProcessor.debug("Working dimensions: \(imageWidth, format: .fixed(precision: 0)) × \(imageHeight, format: .fixed(precision: 0))")
+
+        // Use LANDSCAPE corners (these match the actual pixel buffer dimensions)
+        let corners = perspectiveTransform.landscapeCorners
+
+        AppLogger.imageProcessor.debug("─────────────────────────────────────────────────────")
+        AppLogger.imageProcessor.debug("Input Corners (Landscape coordinates, matching pixel buffer):")
+        AppLogger.imageProcessor.debug("  [0] Top-Left:     (\(corners[0].x, format: .fixed(precision: 1)), \(corners[0].y, format: .fixed(precision: 1)))")
+        AppLogger.imageProcessor.debug("  [1] Top-Right:    (\(corners[1].x, format: .fixed(precision: 1)), \(corners[1].y, format: .fixed(precision: 1)))")
+        AppLogger.imageProcessor.debug("  [2] Bottom-Right: (\(corners[2].x, format: .fixed(precision: 1)), \(corners[2].y, format: .fixed(precision: 1)))")
+        AppLogger.imageProcessor.debug("  [3] Bottom-Left:  (\(corners[3].x, format: .fixed(precision: 1)), \(corners[3].y, format: .fixed(precision: 1)))")
+
+        // Validate corners are within bounds
+        let margin: CGFloat = 0
+        let allInBounds = corners.allSatisfy { corner in
+            corner.x >= margin && corner.x <= imageWidth - margin &&
+            corner.y >= margin && corner.y <= imageHeight - margin
+        }
+
+        if !allInBounds {
+            AppLogger.imageProcessor.error("Corner coordinates are outside image bounds!")
+            AppLogger.imageProcessor.error("  Image dimensions: \(imageWidth, format: .fixed(precision: 0)) × \(imageHeight, format: .fixed(precision: 0))")
+            for (index, corner) in corners.enumerated() {
+                let outOfBounds = corner.x < margin || corner.x > imageWidth - margin ||
+                                 corner.y < margin || corner.y > imageHeight - margin
+                if outOfBounds {
+                    AppLogger.imageProcessor.error("  Corner[\(index)]: (\(corner.x, format: .fixed(precision: 1)), \(corner.y, format: .fixed(precision: 1))) - OUT OF BOUNDS")
+                }
+            }
+        }
 
         // Create perspective correction filter
         guard let filter = CIFilter(name: "CIPerspectiveCorrection") else {
@@ -448,34 +437,25 @@ class ImageTransformProcessor {
 
         filter.setValue(ciImage, forKey: kCIInputImageKey)
 
-        // Core Image uses bottom-left origin, UIKit uses top-left origin
-        // Need to flip Y coordinates
-        let imageHeight = ciImage.extent.height
-        let corners = transform.sourceCorners
-
-        AppLogger.imageProcessor.debug("Source corners (UIKit top-left origin):")
-        AppLogger.imageProcessor.debug("  [0] topLeft: \(String(describing: corners[0]))")
-        AppLogger.imageProcessor.debug("  [1] topRight: \(String(describing: corners[1]))")
-        AppLogger.imageProcessor.debug("  [2] bottomRight: \(String(describing: corners[2]))")
-        AppLogger.imageProcessor.debug("  [3] bottomLeft: \(String(describing: corners[3]))")
-
-        // Convert to Core Image coordinate system (bottom-left origin)
-        let ciBottomLeft = CIVector(x: corners[3].x, y: imageHeight - corners[3].y)
-        let ciBottomRight = CIVector(x: corners[2].x, y: imageHeight - corners[2].y)
+        // Convert from UIKit coordinates (top-left origin, Y-down) to Core Image coordinates (bottom-left origin, Y-up)
+        // Formula: ciY = imageHeight - uiKitY
         let ciTopLeft = CIVector(x: corners[0].x, y: imageHeight - corners[0].y)
         let ciTopRight = CIVector(x: corners[1].x, y: imageHeight - corners[1].y)
+        let ciBottomRight = CIVector(x: corners[2].x, y: imageHeight - corners[2].y)
+        let ciBottomLeft = CIVector(x: corners[3].x, y: imageHeight - corners[3].y)
 
-        AppLogger.imageProcessor.debug("Converted corners (Core Image bottom-left origin):")
-        AppLogger.imageProcessor.debug("  inputTopLeft: \(ciTopLeft)")
-        AppLogger.imageProcessor.debug("  inputTopRight: \(ciTopRight)")
+        AppLogger.imageProcessor.debug("─────────────────────────────────────────────────────")
+        AppLogger.imageProcessor.debug("Converted Corners (Core Image coordinates, bottom-left origin):")
+        AppLogger.imageProcessor.debug("  inputTopLeft:     \(ciTopLeft)")
+        AppLogger.imageProcessor.debug("  inputTopRight:    \(ciTopRight)")
         AppLogger.imageProcessor.debug("  inputBottomRight: \(ciBottomRight)")
-        AppLogger.imageProcessor.debug("  inputBottomLeft: \(ciBottomLeft)")
+        AppLogger.imageProcessor.debug("  inputBottomLeft:  \(ciBottomLeft)")
 
-        // Corner order: [topLeft, topRight, bottomRight, bottomLeft]
-        filter.setValue(ciBottomLeft, forKey: "inputBottomLeft")
-        filter.setValue(ciBottomRight, forKey: "inputBottomRight")
+        // Set filter parameters with correct parameter names
         filter.setValue(ciTopLeft, forKey: "inputTopLeft")
         filter.setValue(ciTopRight, forKey: "inputTopRight")
+        filter.setValue(ciBottomRight, forKey: "inputBottomRight")
+        filter.setValue(ciBottomLeft, forKey: "inputBottomLeft")
 
         // Get output image
         guard let outputImage = filter.outputImage else {
@@ -483,7 +463,10 @@ class ImageTransformProcessor {
             return nil
         }
 
-        AppLogger.imageProcessor.debug("Output image extent: \(String(describing: outputImage.extent))")
+        AppLogger.imageProcessor.debug("─────────────────────────────────────────────────────")
+        AppLogger.imageProcessor.debug("Filter Output:")
+        AppLogger.imageProcessor.debug("  Output extent: \(String(describing: outputImage.extent))")
+        AppLogger.imageProcessor.debug("  Output size: \(outputImage.extent.width, format: .fixed(precision: 0)) × \(outputImage.extent.height, format: .fixed(precision: 0))")
 
         // Render to CGImage
         guard let cgImage = ciContext.createCGImage(
@@ -494,14 +477,21 @@ class ImageTransformProcessor {
             return nil
         }
 
-        // Convert to UIImage with correct orientation
-        // The input was rotated .right, so output should maintain that orientation
-        let resultImage = UIImage(cgImage: cgImage, scale: 1.0, orientation: .right)
+        AppLogger.imageProcessor.debug("CGImage created:")
+        AppLogger.imageProcessor.debug("  CGImage.width: \(cgImage.width)")
+        AppLogger.imageProcessor.debug("  CGImage.height: \(cgImage.height)")
 
-        AppLogger.imageProcessor.info("Perspective correction applied successfully")
-        AppLogger.imageProcessor.info("  Final output size: \(resultImage.size.width, format: .fixed(precision: 0)) × \(resultImage.size.height, format: .fixed(precision: 0))")
-        AppLogger.imageProcessor.info("  Orientation: .right (rotated to match input)")
-        AppLogger.imageProcessor.info("  Quality: \(transform.quality.qualityDescription)")
+        // Create UIImage with .up orientation (no rotation needed - pixels are already correctly oriented)
+        let resultImage = UIImage(cgImage: cgImage, scale: 1.0, orientation: .up)
+
+        AppLogger.imageProcessor.info("─────────────────────────────────────────────────────")
+        AppLogger.imageProcessor.info("✓ Perspective Correction Completed Successfully")
+        AppLogger.imageProcessor.info("  Final UIImage.size: \(resultImage.size.width, format: .fixed(precision: 0)) × \(resultImage.size.height, format: .fixed(precision: 0))")
+        AppLogger.imageProcessor.info("  Orientation: .up (no rotation)")
+        AppLogger.imageProcessor.info("  Quality: \(perspectiveTransform.quality.qualityDescription)")
+        AppLogger.imageProcessor.info("  Camera angle: \(perspectiveTransform.quality.cameraAngleDegrees, format: .fixed(precision: 1))°")
+        AppLogger.imageProcessor.info("  Resolution: \(perspectiveTransform.quality.estimatedPixelsPerMeter, format: .fixed(precision: 0)) pixels/meter")
+        AppLogger.imageProcessor.info("═══════════════════════════════════════════════════════")
 
         return resultImage
     }

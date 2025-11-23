@@ -15,11 +15,22 @@ import simd
 /// This structure defines the mapping from the oblique camera view (trapezoid) to an
 /// orthogonal top-down view (rectangle). It's created during image capture and used
 /// by Core Image's CIPerspectiveCorrection filter to warp the image.
+///
+/// **Coordinate Systems:**
+/// - `landscapeCorners`: Original corners from ARCamera projection in landscape orientation (1920×1440)
+/// - `portraitCorners`: Rotated corners for portrait-oriented display (1440×1920)
+/// The transformation uses `landscapeCorners` to match the actual pixel buffer,
+/// while UI display uses `portraitCorners` to match the rotated image presentation.
 struct PerspectiveTransform {
-    /// Pixel coordinates of the capture region's four corners in the camera image.
-    /// These define the quadrilateral (typically trapezoid) that will be transformed
-    /// into a rectangle. Ordered as: [topLeft, topRight, bottomRight, bottomLeft]
-    var sourceCorners: [CGPoint]
+    /// Pixel coordinates in LANDSCAPE orientation (matching the camera's native pixel buffer).
+    /// These are used by CIPerspectiveCorrection which works with the raw pixel buffer.
+    /// Ordered as: [topLeft, topRight, bottomRight, bottomLeft]
+    var landscapeCorners: [CGPoint]
+
+    /// Pixel coordinates in PORTRAIT orientation (after 90° CW rotation).
+    /// These are used for UI display and corner marker overlay.
+    /// Ordered as: [topLeft, topRight, bottomRight, bottomLeft]
+    var portraitCorners: [CGPoint]
 
     /// Dimensions of the output image after perspective correction is applied.
     /// The output will be rectangular with these dimensions, showing a top-down view.
@@ -32,16 +43,20 @@ struct PerspectiveTransform {
     /// camera angle, corner visibility, and estimated resolution.
     var quality: TransformQuality
 
-    /// Initialize a perspective transformation.
+
+    /// Initialize a perspective transformation with both landscape and portrait corner coordinates.
     ///
     /// - Parameters:
-    ///   - sourceCorners: Must contain exactly 4 CGPoint values in the order [topLeft, topRight, bottomRight, bottomLeft]
+    ///   - landscapeCorners: Must contain exactly 4 CGPoint values in landscape orientation [topLeft, topRight, bottomRight, bottomLeft]
+    ///   - portraitCorners: Must contain exactly 4 CGPoint values in portrait orientation [topLeft, topRight, bottomRight, bottomLeft]
     ///   - destinationSize: Output image dimensions in pixels
     ///   - timestamp: Time when transform was calculated
     ///   - quality: Quality metrics for this transformation
-    init(sourceCorners: [CGPoint], destinationSize: CGSize, timestamp: TimeInterval, quality: TransformQuality) {
-        assert(sourceCorners.count == 4, "Must provide exactly 4 corners")
-        self.sourceCorners = sourceCorners
+    init(landscapeCorners: [CGPoint], portraitCorners: [CGPoint], destinationSize: CGSize, timestamp: TimeInterval, quality: TransformQuality) {
+        assert(landscapeCorners.count == 4, "Must provide exactly 4 landscape corners")
+        assert(portraitCorners.count == 4, "Must provide exactly 4 portrait corners")
+        self.landscapeCorners = landscapeCorners
+        self.portraitCorners = portraitCorners
         self.destinationSize = destinationSize
         self.timestamp = timestamp
         self.quality = quality

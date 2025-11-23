@@ -369,6 +369,10 @@ struct ARViewContainer: UIViewRepresentable {
         /// Note: Most transformation calculations are done in updateScreenCenteredCaptureRegion(),
         /// so this method simply captures the image and packages the pre-calculated data.
         func captureCameraFrameWithTransform() {
+            AppLogger.arCoordinator.info("═══════════════════════════════════════════════════════")
+            AppLogger.arCoordinator.info("Capturing Camera Frame")
+            AppLogger.arCoordinator.info("═══════════════════════════════════════════════════════")
+
             guard let frame = arView.session.currentFrame else {
                 AppLogger.arCoordinator.error("arView.session.currentFrame is nil")
                 return
@@ -384,11 +388,15 @@ struct ARViewContainer: UIViewRepresentable {
                 return
             }
 
-            AppLogger.arCoordinator.notice("Capturing camera frame with transformation")
-
             // Get the camera image buffer
             let pixelBuffer = frame.capturedImage
             let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+
+            AppLogger.arCoordinator.debug("Camera Buffer Details:")
+            AppLogger.arCoordinator.debug("  CVPixelBuffer width: \(CVPixelBufferGetWidth(pixelBuffer))")
+            AppLogger.arCoordinator.debug("  CVPixelBuffer height: \(CVPixelBufferGetHeight(pixelBuffer))")
+            AppLogger.arCoordinator.debug("  CIImage.extent: \(String(describing: ciImage.extent))")
+            AppLogger.arCoordinator.debug("  CIImage.extent.size: \(ciImage.extent.width, format: .fixed(precision: 0)) × \(ciImage.extent.height, format: .fixed(precision: 0))")
 
             // Create CIContext for rendering
             let context = CIContext()
@@ -399,13 +407,43 @@ struct ARViewContainer: UIViewRepresentable {
                 return
             }
 
+            AppLogger.arCoordinator.debug("  CGImage.width: \(cgImage.width)")
+            AppLogger.arCoordinator.debug("  CGImage.height: \(cgImage.height)")
+
             // Rotate to correct orientation (portrait)
             let uiImage = UIImage(cgImage: cgImage, scale: 1.0, orientation: .right)
-            AppLogger.arCoordinator.info("Camera image captured: \(uiImage.size.width, format: .fixed(precision: 0)) × \(uiImage.size.height, format: .fixed(precision: 0))")
+            AppLogger.arCoordinator.debug("  UIImage.size (after .right orientation): \(uiImage.size.width, format: .fixed(precision: 0)) × \(uiImage.size.height, format: .fixed(precision: 0))")
+            AppLogger.arCoordinator.debug("  UIImage.orientation: .right (rawValue: \(uiImage.imageOrientation.rawValue))")
 
             // Use already-calculated image resolution from bindings
             let imageResolution = cameraImageSizeBinding.wrappedValue
-            AppLogger.arCoordinator.debug("Using cached image resolution: \(imageResolution.width, format: .fixed(precision: 0)) × \(imageResolution.height, format: .fixed(precision: 0))")
+            AppLogger.arCoordinator.debug("─────────────────────────────────────────────────────")
+            AppLogger.arCoordinator.debug("Cached Image Resolution: \(imageResolution.width, format: .fixed(precision: 0)) × \(imageResolution.height, format: .fixed(precision: 0))")
+
+            // Log landscape corners (as projected by ARCamera)
+            AppLogger.arCoordinator.debug("─────────────────────────────────────────────────────")
+            AppLogger.arCoordinator.debug("Projected Corners (Landscape coordinates from ARCamera):")
+            AppLogger.arCoordinator.debug("  [0] (\(corners2D[0].x, format: .fixed(precision: 1)), \(corners2D[0].y, format: .fixed(precision: 1)))")
+            AppLogger.arCoordinator.debug("  [1] (\(corners2D[1].x, format: .fixed(precision: 1)), \(corners2D[1].y, format: .fixed(precision: 1)))")
+            AppLogger.arCoordinator.debug("  [2] (\(corners2D[2].x, format: .fixed(precision: 1)), \(corners2D[2].y, format: .fixed(precision: 1)))")
+            AppLogger.arCoordinator.debug("  [3] (\(corners2D[3].x, format: .fixed(precision: 1)), \(corners2D[3].y, format: .fixed(precision: 1)))")
+
+            // Rotate corners to match portrait orientation
+            // corners2D are in landscape orientation (from ARCamera), convert to portrait
+            // Rotation formula: portrait_x = landscape_image_height - landscape_y, portrait_y = landscape_x
+            let rotatedCorners = corners2D.map { corner -> CGPoint in
+                CGPoint(
+                    x: imageResolution.height - corner.y,
+                    y: corner.x
+                )
+            }
+
+            AppLogger.arCoordinator.debug("Rotated Corners (Portrait coordinates for UIImage):")
+            AppLogger.arCoordinator.debug("  [0] (\(rotatedCorners[0].x, format: .fixed(precision: 1)), \(rotatedCorners[0].y, format: .fixed(precision: 1)))")
+            AppLogger.arCoordinator.debug("  [1] (\(rotatedCorners[1].x, format: .fixed(precision: 1)), \(rotatedCorners[1].y, format: .fixed(precision: 1)))")
+            AppLogger.arCoordinator.debug("  [2] (\(rotatedCorners[2].x, format: .fixed(precision: 1)), \(rotatedCorners[2].y, format: .fixed(precision: 1)))")
+            AppLogger.arCoordinator.debug("  [3] (\(rotatedCorners[3].x, format: .fixed(precision: 1)), \(rotatedCorners[3].y, format: .fixed(precision: 1)))")
+            AppLogger.arCoordinator.debug("  (These should match CGImage dimensions: \(cgImage.width) × \(cgImage.height))")
 
             // Calculate quality metrics (these are cheap calculations)
             let cameraAngle = PerspectiveTransformCalculator.calculateCameraAngle(
@@ -434,22 +472,18 @@ struct ARViewContainer: UIViewRepresentable {
                 estimatedPixelsPerMeter: pixelsPerMeter
             )
 
-            AppLogger.arCoordinator.info("Transformation quality:")
+            AppLogger.arCoordinator.info("─────────────────────────────────────────────────────")
+            AppLogger.arCoordinator.info("Transformation Quality Metrics:")
             AppLogger.arCoordinator.info("  Camera angle: \(quality.cameraAngleDegrees, format: .fixed(precision: 1))°")
-            AppLogger.arCoordinator.info("  Quality: \(quality.qualityDescription)")
+            AppLogger.arCoordinator.info("  All corners visible: \(quality.allCornersVisible)")
+            AppLogger.arCoordinator.info("  Pixels per meter: \(quality.estimatedPixelsPerMeter, format: .fixed(precision: 0))")
+            AppLogger.arCoordinator.info("  Overall quality: \(quality.qualityDescription)")
+            AppLogger.arCoordinator.info("  Output size: \(outputSize.width, format: .fixed(precision: 0)) × \(outputSize.height, format: .fixed(precision: 0))")
 
-            // Rotate corners to match portrait orientation
-            // corners2D are in landscape orientation (from ARCamera), convert to portrait
-            let rotatedCorners = corners2D.map { corner -> CGPoint in
-                CGPoint(
-                    x: imageResolution.height - corner.y,
-                    y: corner.x
-                )
-            }
-
-            // Create transform with rotated corners
+            // Create transform with both landscape and portrait corners
             let transform = PerspectiveTransform(
-                sourceCorners: rotatedCorners,
+                landscapeCorners: corners2D,        // Original landscape corners for CIPerspectiveCorrection
+                portraitCorners: rotatedCorners,    // Rotated portrait corners for UI display
                 destinationSize: outputSize,
                 timestamp: Date().timeIntervalSince1970,
                 quality: quality
@@ -463,10 +497,15 @@ struct ARViewContainer: UIViewRepresentable {
                 cameraTransform: frame.camera.transform
             )
 
+            AppLogger.arCoordinator.info("─────────────────────────────────────────────────────")
+            AppLogger.arCoordinator.info("✓ Captured Frame Created Successfully")
+            AppLogger.arCoordinator.info("  Ready for perspective transformation")
+            AppLogger.arCoordinator.info("═══════════════════════════════════════════════════════")
+
             // Update binding asynchronously to avoid "modifying state during view update" warning
             DispatchQueue.main.async {
                 self.capturedFrameBinding.wrappedValue = capturedFrame
-                AppLogger.arCoordinator.info("Captured frame updated successfully")
+                AppLogger.arCoordinator.info("Captured frame binding updated")
             }
         }
     }
