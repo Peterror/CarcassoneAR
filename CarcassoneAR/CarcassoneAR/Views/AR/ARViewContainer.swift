@@ -457,13 +457,14 @@ struct ARViewContainer: UIViewRepresentable {
             )
 
             let outputSize = PerspectiveTransformCalculator.calculateOutputSize(
+                corners: corners2D,
                 planeData: planeData,
                 maxWidth: 2048
             )
 
             let pixelsPerMeter = PerspectiveTransformCalculator.estimatePixelsPerMeter(
-                planeData: planeData,
-                outputSize: outputSize
+                corners2D: corners2D,
+                planeData: planeData
             )
 
             let quality = TransformQuality(

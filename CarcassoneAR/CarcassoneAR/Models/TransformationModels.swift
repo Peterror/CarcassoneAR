@@ -91,7 +91,7 @@ struct TransformQuality {
     var isGoodQuality: Bool {
         return cameraAngleDegrees > 20 &&   // Not too flat/oblique
                allCornersVisible &&
-               estimatedPixelsPerMeter > 50  // Sufficient detail
+               estimatedPixelsPerMeter > 640  // Sufficient detail
     }
 
     /// Human-readable description of the quality status with actionable guidance.

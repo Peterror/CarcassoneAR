@@ -82,22 +82,38 @@ class PerspectiveTransformCalculator {
 
         return projected
     }
-
+    
     /// Calculate the output image dimensions for the transformed perspective-corrected image.
+    ///
+    /// Calculates the pixel distance of both the top edge (corner[0] to corner[1]) and bottom edge
+    /// (corner[3] to corner[2]) of the quadrilateral, then uses the longer distance as the basis
+    /// for output width. This ensures the output image has sufficient resolution to represent the
+    /// most detailed edge of the perspective-distorted capture region.
     ///
     /// Maintains the plane's aspect ratio while constraining to a maximum width to prevent
     /// excessive memory usage. Since the plane is square, the output will also be square.
     ///
-    /// - Parameters:
+    /// - Parameters
+    ///   - corners: Array of corner positions in pixel coordinates [topLeft, topRight, bottomRight, bottomLeft]
     ///   - planeData: Contains the plane dimensions (width and height in meters)
     ///   - maxWidth: Maximum width in pixels for the output image. Defaults to 2048px.
     /// - Returns: CGSize representing the output image dimensions (width × height in pixels)
     static func calculateOutputSize(
+        corners: [CGPoint],
         planeData: PlaneData,
         maxWidth: CGFloat = 2048
     ) -> CGSize {
+        // Calculate top width: distance from corner[0] (top-left) to corner[1] (top-right)
+        let topWidth = sqrt(pow(corners[1].x - corners[0].x, 2) + pow(corners[1].y - corners[0].y, 2))
+
+        // Calculate bottom width: distance from corner[3] (bottom-left) to corner[2] (bottom-right)
+        let bottomWidth = sqrt(pow(corners[2].x - corners[3].x, 2) + pow(corners[2].y - corners[3].y, 2))
+
+        // Use the longer edge as the basis for output width (ensures best resolution)
+        let maxEdgeWidth = max(topWidth, bottomWidth)
+
         let aspectRatio = CGFloat(planeData.width / planeData.height)
-        let outputWidth = maxWidth
+        let outputWidth = min(maxWidth, maxEdgeWidth)
         let outputHeight = outputWidth / aspectRatio
         return CGSize(width: outputWidth, height: outputHeight)
     }
@@ -172,23 +188,45 @@ class PerspectiveTransformCalculator {
         return angleDegrees
     }
 
-    /// Estimate the spatial resolution of the transformed output image.
+    /// Estimate the spatial resolution of the captured image based on projected corner area.
     ///
-    /// Calculates how many pixels represent one meter of real-world distance in the
-    /// perspective-corrected image. Higher values indicate better detail capture.
+    /// Calculates how many pixels represent one meter of real-world distance by measuring
+    /// the actual pixel area covered by the projected corners in the camera image. This
+    /// provides a more accurate resolution estimate than using the output image dimensions,
+    /// since it accounts for perspective distortion and camera angle.
+    ///
+    /// Uses the shoelace formula to calculate the area of the quadrilateral formed by
+    /// the four projected corners, then derives pixels per meter from the ratio of
+    /// pixel area to real-world area.
     ///
     /// - Parameters:
-    ///   - planeData: Contains the physical dimensions of the plane in meters
-    ///   - outputSize: The dimensions of the output image in pixels
-    /// - Returns: Average pixels per meter across both width and height dimensions
+    ///   - corners2D: Array of projected corner positions in pixel coordinates [topLeft, topRight, bottomRight, bottomLeft]
+    ///   - planeData: Contains the physical dimensions of the plane in meters (width × height)
+    /// - Returns: Estimated pixels per meter (square root of pixel density)
     static func estimatePixelsPerMeter(
-        planeData: PlaneData,
-        outputSize: CGSize
+        corners2D: [CGPoint],
+        planeData: PlaneData
     ) -> Float {
-        // Average pixels per meter in both dimensions
-        let pixelsPerMeterWidth = Float(outputSize.width) / planeData.width
-        let pixelsPerMeterHeight = Float(outputSize.height) / planeData.height
-        return (pixelsPerMeterWidth + pixelsPerMeterHeight) / 2.0
+        // Calculate area of quadrilateral using shoelace formula
+        // Area = 0.5 * |sum of (x[i] * y[i+1] - x[i+1] * y[i])|
+        var area: CGFloat = 0.0
+        let n = corners2D.count
+
+        for i in 0..<n {
+            let j = (i + 1) % n
+            area += corners2D[i].x * corners2D[j].y
+            area -= corners2D[j].x * corners2D[i].y
+        }
+        area = abs(area) / 2.0
+
+        // Calculate real-world area in square meters
+        let realWorldArea = planeData.width * planeData.height
+
+        // Pixels per square meter
+        let pixelsPerSquareMeter = Float(area) / realWorldArea
+
+        // Return square root to get linear pixels per meter
+        return sqrt(pixelsPerSquareMeter)
     }
 
     /// Calculate rotation quaternion using the viewing direction from camera to raycast point.
