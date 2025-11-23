@@ -20,7 +20,7 @@ struct ContentView: View {
     @State private var capturedFrame: CapturedFrame?
     @State private var captureNow: Bool = false
     @State private var projectedCorners: [CGPoint]?
-    @State private var cameraImageSize: CGSize = .zero
+    @State private var cameraImageSize: CGSize = .zero  // For overlaying corners on the UI
     @State private var pendingViewSwitch: Bool = false
 
     var body: some View {
