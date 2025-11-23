@@ -78,7 +78,7 @@ struct View2D: View {
                             if !showTransformed || transformedImage == nil {
                                 GeometryReader { imageGeometry in
                                 Canvas { context, size in
-                                    let corners = frame.transform.sourceCorners
+                                    let corners = frame.transform.portraitCorners
 
                                     // Get actual image dimensions
                                     let imageWidth = frame.image.size.width
@@ -223,7 +223,7 @@ struct View2D: View {
             // Perform transformation (runs on main actor)
             let result = ImageTransformProcessor.applyPerspectiveCorrection(
                 image: frame.image,
-                transform: frame.transform
+                perspectiveTransform: frame.transform
             )
 
             // Update state
