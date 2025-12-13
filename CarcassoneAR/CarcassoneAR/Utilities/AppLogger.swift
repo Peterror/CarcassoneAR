@@ -59,4 +59,10 @@ struct AppLogger {
     /// Logger for View2D
     /// Handles 2D view user interactions and display
     static let view2D = Logger(subsystem: subsystem, category: "View2D")
+
+    // MARK: - Export Loggers
+
+    /// Logger for ImageExporter class
+    /// Handles image export operations to Photos Library
+    static let imageExporter = Logger(subsystem: subsystem, category: "ImageExporter")
 }
