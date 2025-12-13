@@ -15,6 +15,11 @@ struct View2D: View {
     @State private var transformedImage: UIImage?
     @State private var isProcessing: Bool = false
     @State private var showTransformed: Bool = true  // Default to transformed view
+    @State private var isExporting: Bool = false
+    @State private var showExportAlert: Bool = false
+    @State private var exportAlertMessage: String = ""
+
+    private let imageExporter = ImageExporter()
 
     var body: some View {
         GeometryReader { geometry in
@@ -162,7 +167,7 @@ struct View2D: View {
                     }
                 }
 
-                // Bottom button bar with Toggle and 3D buttons
+                // Bottom button bar with Toggle, Export, and 3D buttons
                 VStack {
                     Spacer()
 
@@ -189,6 +194,33 @@ struct View2D: View {
 
                         Spacer()
 
+                        // Export button (only shown when transformed image is available)
+                        if capturedFrame != nil, let transformed = transformedImage {
+                            Button(action: {
+                                exportImage(transformed)
+                            }) {
+                                HStack(spacing: 6) {
+                                    if isExporting {
+                                        ProgressView()
+                                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                            .scaleEffect(0.8)
+                                    } else {
+                                        Image(systemName: "square.and.arrow.down")
+                                    }
+                                    Text("Export")
+                                }
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 20)
+                                .padding(.vertical, 12)
+                                .background(Color.green.opacity(0.7))
+                                .cornerRadius(10)
+                            }
+                            .disabled(isExporting || isProcessing)
+                        }
+
+                        Spacer()
+
                         Button(action: {
                             AppLogger.view2D.notice("3D button tapped")
                             viewMode = .ar
@@ -206,6 +238,11 @@ struct View2D: View {
                     .padding(.bottom, 50)
                 }
             }
+        }
+        .alert("Export Result", isPresented: $showExportAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(exportAlertMessage)
         }
         .task(id: capturedFrame?.transform.timestamp) {
             // Apply perspective transformation when a new frame is captured
@@ -235,6 +272,41 @@ struct View2D: View {
             } else {
                 AppLogger.view2D.error("Perspective transformation failed")
             }
+        }
+    }
+
+    // MARK: - Export Function
+
+    private func exportImage(_ transformedImage: UIImage) {
+        guard let frame = capturedFrame else {
+            AppLogger.view2D.error("Cannot export: no captured frame available")
+            return
+        }
+
+        AppLogger.view2D.notice("Export button tapped")
+        isExporting = true
+
+        // Create a new CapturedFrame with the transformed image for export
+        let exportFrame = CapturedFrame(
+            image: transformedImage,
+            transform: frame.transform,
+            planeData: frame.planeData,
+            cameraTransform: frame.cameraTransform
+        )
+
+        imageExporter.exportToPhotos(capturedFrame: exportFrame) { result in
+            isExporting = false
+
+            switch result {
+            case .success:
+                exportAlertMessage = "Image successfully saved to Photos Library!\n\nYou can find it in the Recents album."
+                AppLogger.view2D.notice("Export successful")
+            case .failure(let error):
+                exportAlertMessage = error.localizedDescription
+                AppLogger.view2D.error("Export failed: \(error.localizedDescription)")
+            }
+
+            showExportAlert = true
         }
     }
 }
