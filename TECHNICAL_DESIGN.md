@@ -1,414 +1,1100 @@
-# Technical Design Document: Top-Down Perspective Transformation
+# Technical Design Document: CarcassoneAR
 
-## Overview
+## 1. Project Overview
 
-This document describes the technical implementation of perspective transformation to convert oblique AR camera views of horizontal surfaces into orthogonal top-down views, creating the effect of a virtual overhead camera.
+### 1.1 Vision & Goals
+
+CarcassoneAR is an iOS augmented reality application designed to enhance the Carcassonne board game experience. Using AR and computer vision, the app captures the physical game board, recognizes placed tiles, tracks game state, and provides intelligent assistance to players.
+
+**Primary Goals:**
+- Capture and digitize physical Carcassonne game boards using AR
+- Automatically recognize and classify placed tiles
+- Track remaining tiles and calculate placement probabilities
+- Validate tile placements and suggest legal moves
+
+**Design Principles:**
+- On-device processing for privacy and offline capability
+- Non-intrusive assistance that enhances rather than replaces gameplay
+- Hybrid recognition with user confirmation for accuracy
+- Progressive enhancement from basic capture to full game assistance
+
+### 1.2 Target Features
+
+| Feature | Description | Priority |
+|---------|-------------|----------|
+| **Remaining Tiles** | Display count and types of unplayed tiles | Core |
+| **Placement Hints** | Show valid positions for a drawn tile | Core |
+| **Probability Calculator** | % chance of finding tiles matching specific edge requirements | Core |
+| **Game State Tracking** | Maintain digital representation of physical board | Core |
+| **Scoring Assistance** | Calculate potential and current additional points per player | Future |
+| **Pawn Detection** | Detect and localize player pawns (meeples) on tiles | Future |
+| **Save/Resume** | Persist game state across sessions | Future |
+| **Expansion Support** | Additional tile sets beyond base + river | Future |
+
+### 1.3 User Experience Flow
+
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   AR Scanning   │───▶│  Board Capture  │───▶│ Tile Detection  │
+│ (Detect Table)  │    │ (Perspective)   │    │ (YOLO)          │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+                                                       │
+                       ┌───────────────────────────────┘
+                       ▼
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│  Classification │───▶│  User Confirm   │───▶│  Game State     │
+│  (MobileNetV2)  │    │  (Hybrid Mode)  │    │  Update         │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+                                                       │
+                       ┌───────────────────────────────┘
+                       ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    HELPER FEATURES                              │
+│  • Remaining tiles display    • Valid placement overlay         │
+│  • Probability percentages    • (Future: Score calculation)     │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Typical Session:**
+1. User starts game, places physical tiles on table
+2. User opens app and scans the table surface (AR plane detection)
+3. App captures top-down view of board (perspective transformation)
+4. App detects tiles using YOLO and classifies each one (object detection + ML)
+5. User confirms/corrects recognition results (hybrid validation)
+6. App tracks game state and provides assistance (remaining tiles, suggestions)
+7. User can re-scan after placing new tiles
 
 ---
 
-## 1. Problem Statement
+## 2. System Architecture
 
-### Current State
-- ARKit detects horizontal planes and provides their position, orientation, and dimensions
-- Camera captures oblique (angled) views of the surface
-- Raw camera image shows perspective distortion (parallel lines converge, far objects appear smaller)
+### 2.1 High-Level Architecture
 
-### Desired State
-- Transform camera image to show surface as if viewed from directly above
-- Preserve real-world proportions and measurements
-- Maintain image quality despite geometric transformation
-- Support both static snapshots and live transformation
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           CarcassoneAR App                              │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────────────────┐   │
+│  │   AR Layer   │    │   CV Layer   │    │     Game Logic Layer     │   │
+│  │              │    │              │    │                          │   │
+│  │ • ARKit      │───▶│ • YOLO Det.  │───▶│ • Board State            │   │
+│  │ • RealityKit │    │ • Tile Crop  │    │ • Tile Validation        │   │
+│  │ • Plane Det. │    │ • Preprocess │    │ • Remaining Tiles        │   │
+│  │ • Persp.Xfrm │    │              │    │ • Probability Calc       │   │
+│  └──────────────┘    └──────────────┘    └──────────────────────────┘   │
+│                             │                                           │
+│                             ▼                                           │
+│                    ┌──────────────┐                                     │
+│                    │   ML Layer   │                                     │
+│                    │              │                                     │
+│                    │ • CoreML     │                                     │
+│                    │ • YOLO       │                                     │
+│                    │ • MobileNetV2│                                     │
+│                    └──────────────┘                                     │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│                          UI Layer (SwiftUI)                             │
+│  • AR View  • 2D View  • Tile Grid  • Remaining List  • Overlays        │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 2.2 Technology Stack
+
+| Component               | Technology           | Purpose                               |
+|-------------------------|----------------------|---------------------------------------|
+| **AR Engine**           | ARKit + RealityKit   | Plane detection, world tracking       |
+| **Image Processing**    | Core Image           | Perspective correction, preprocessing |
+| **Tile Detection**      | YOLO (CoreML)        | Detect and localize tiles in image    |
+| **Tile Classification** | MobileNetV2 (CoreML) | Classify tile types                   |
+| **UI Framework**        | SwiftUI              | Declarative UI, AR overlays           |
+| **Logging**             | os.Logger            | Structured debugging                  |
+| **Target Platform**     | iOS 26.0+            | Latest ARKit/ML capabilities          |
+
+### 2.3 Data Flow Overview
+
+```
+Physical Board
+      │
+      ▼ (Camera)
+┌─────────────────┐
+│   CVPixelBuffer │ 1920×1440 landscape
+└────────┬────────┘
+         │
+         ▼ (Perspective Transform)
+┌─────────────────┐
+│   Top-Down View │ Corrected orthogonal image
+└────────┬────────┘
+         │
+         ▼ (YOLO Detection)
+┌─────────────────┐
+│  Tile Bboxes    │ Position + rotation of each tile
+└────────┬────────┘
+         │
+         ▼ (Tile Extraction)
+┌─────────────────┐
+│  64×64 Images   │ Normalized, rotation-corrected
+└────────┬────────┘
+         │
+         ▼ (MobileNetV2)
+┌─────────────────┐
+│  Classifications│ TileType + confidence
+└────────┬────────┘
+         │
+         ▼ (Game Logic)
+┌─────────────────┐
+│   BoardState    │ Complete game state
+└─────────────────┘
+```
 
 ---
 
-## 2. Mathematical Foundation
+## 3. AR Capture Pipeline (Implemented)
 
-### 2.1 Coordinate Systems
+### 3.1 Plane Detection
 
-**World Coordinate System (ARKit)**
-- Origin: AR session initialization point
-- X-axis: Right (device perspective)
-- Y-axis: Up (gravity direction)
-- Z-axis: Backward (right-hand rule)
+The app uses ARKit's ARWorldTrackingConfiguration to detect horizontal surfaces suitable for board game play.
+
+**Configuration:**
+```swift
+let configuration = ARWorldTrackingConfiguration()
+configuration.planeDetection = [.horizontal]
+configuration.environmentTexturing = .automatic
+```
+
+**Detection Criteria:**
+- Minimum plane size: 0.4m × 0.4m (ARKit default for stable detection)
+- Dynamic play area: Adapts to actual game size (base game ~1m×1m, expansions larger)
+- Single plane lock: First detected plane is locked for consistent tracking
+
+**Plane Locking Strategy:**
+1. Start AR session with horizontal plane detection
+2. Wait for first plane anchor that meets minimum size
+3. Store `planeAnchor.identifier` as `lockedPlaneID`
+4. Subsequent updates only process the locked plane
+5. Reset button clears lock and restarts detection
+
+### 3.2 Perspective Transformation
+
+Converts oblique camera views to orthogonal top-down representation using homography transformation.
+
+**Pipeline:**
+
+```
+3D World Corners → Camera Projection → 2D Pixel Coords → CIPerspectiveCorrection → Top-Down Image
+```
+
+**Implementation Classes:**
+- `PerspectiveTransformCalculator`: 3D→2D projection, quality validation
+- `ImageTransformProcessor`: Core Image CIPerspectiveCorrection filter application
+
+**Key Methods:**
+```swift
+// Calculate plane corners in 3D world space
+static func calculatePlaneCorners(planeData: PlaneData, rotationQuaternion: simd_quatf?) -> [SIMD3<Float>]
+
+// Project 3D corners to 2D pixel coordinates
+static func projectCornersToImage(corners3D: [SIMD3<Float>], camera: ARCamera, imageResolution: CGSize) -> [CGPoint]
+
+// Apply perspective correction
+static func applyPerspectiveCorrection(image: UIImage, perspectiveTransform: PerspectiveTransform) -> UIImage?
+```
+
+**Quality Thresholds:**
+| Metric            | Good     | Acceptable | Poor    |
+|-------------------|----------|------------|---------|
+| Camera Angle      | >45°     | 20-45°     | <20°    |
+| Resolution        | >640 ppm | 50-640 ppm | <50 ppm |
+| Corner Visibility | All 4    | All 4      | <4      |
+
+### 3.3 Image Export for Training Data
+
+The app exports captured and transformed images to Photos Library for ML training data collection.
+
+**Export Format:**
+- File type: PNG (lossless)
+- Filename: `carcassonne_YYYYMMDD_HHmmss_ppmQQQQ.png`
+- Quality metric embedded in filename (pixels per meter)
+
+**Implementation:** `ImageExporter.swift`
+- Uses PHPhotoLibrary with `.addOnly` authorization
+- Async/await pattern for non-blocking export
+- Error handling for denied/restricted access
+
+### 3.4 Coordinate Systems Reference
+
+**ARKit World Space:**
+```
+        Y (up, gravity opposite)
+        │
+        │
+        +──────── X (right)
+       /
+      Z (toward user)
+
+- Right-handed coordinate system
+- Origin: AR session start position
 - Units: Meters
+```
 
-**Camera Coordinate System**
-- Origin: Camera optical center
-- X-axis: Right in camera view
-- Y-axis: Up in camera view
-- Z-axis: Into the scene (viewing direction)
-- Units: Meters
+**Camera Image Space (Landscape):**
+```
+    (0,0) ──────────── X (1920)
+      │
+      │
+      Y (1440)
 
-**Image Coordinate System (UIKit/CoreImage)**
-- Origin: Top-left corner
-- X-axis: Right
-- Y-axis: Down
+- Origin: Top-left
 - Units: Pixels
-
-**Plane Local Coordinate System**
-- Origin: Plane center (anchor position)
-- X-axis: Plane width direction
-- Z-axis: Plane depth direction
-- Y-axis: Normal to plane (perpendicular up)
-- Units: Meters
-
-### 2.2 Transformation Pipeline
-
-```
-3D World Coordinates → Camera Projection → 2D Image Coordinates → Homography → Top-Down View
+- Native camera buffer orientation
 ```
 
-**Step 1: Define Plane Corners in World Space**
-Given plane data (center position, width, height, transform):
+**Portrait Display Space:**
 ```
-corner_TL = center + transform * (-width/2, 0, -height/2)
-corner_TR = center + transform * (+width/2, 0, -height/2)
-corner_BR = center + transform * (+width/2, 0, +height/2)
-corner_BL = center + transform * (-width/2, 0, +height/2)
+    (0,0) ──────────── X (1440)
+      │
+      │
+      Y (1920)
+
+- Rotated 90° CW from landscape
+- Used for UI display
 ```
 
-**Step 2: Project to Camera Image**
-Use ARCamera.projectPoint() to convert 3D world positions to 2D pixel coordinates:
+**Core Image Space:**
 ```
-pixel_TL = camera.projectPoint(corner_TL)
-pixel_TR = camera.projectPoint(corner_TR)
-pixel_BR = camera.projectPoint(corner_BR)
-pixel_BL = camera.projectPoint(corner_BL)
+      Y (height)
+      │
+      │
+    (0,0) ──────────── X (width)
+
+- Origin: Bottom-left
+- Y-axis inverted from UIKit
+- Conversion: ciY = imageHeight - uiKitY
 ```
 
-**Step 3: Define Output Rectangle**
-Top-down view should show plane as axis-aligned rectangle:
+**Tile Grid Space:**
 ```
-output_TL = (0, 0)
-output_TR = (outputWidth, 0)
-output_BR = (outputWidth, outputHeight)
-output_BL = (0, outputHeight)
+         +Y (North)
+           │
+           │
+   -X ─────┼───── +X
+   (West)  │      (East)
+           │
+         -Y (South)
+
+- Origin: First tile placed (typically center of board)
+- Units: Tile positions (integer grid)
+- Standard convention: +Y = North (top of board)
+- Rotation: 0° = tile top edge facing North (+Y)
 ```
 
-Output dimensions maintain aspect ratio:
-```
-aspectRatio = planeWidth / planeHeight
-outputWidth = desiredWidth
-outputHeight = outputWidth / aspectRatio
-```
+### 3.5 Quality Validation
 
-**Step 4: Compute Perspective Transform**
-Homography matrix H maps source quadrilateral to destination rectangle.
-Using Core Image's CIPerspectiveCorrection filter with corner points.
+**TransformQuality Structure:**
+```swift
+struct TransformQuality {
+    var cameraAngleDegrees: Float    // 0-90°, higher is better
+    var allCornersVisible: Bool      // All 4 corners in frame
+    var estimatedPixelsPerMeter: Float // Higher = more detail
+
+    var isGoodQuality: Bool {
+        cameraAngleDegrees > 20 && allCornersVisible && estimatedPixelsPerMeter > 640
+    }
+}
+```
 
 ---
 
-## 3. Implementation Architecture
+## 4. Tile Detection Pipeline (Planned)
 
-### 3.1 Data Structures
+### 4.1 YOLO-Based Detection
 
+Use YOLO (You Only Look Once) object detection to reliably detect and localize tiles regardless of board rotation or orientation.
+
+**Why YOLO over Edge Detection:**
+- Robust to image rotation and perspective distortion
+- Handles varying lighting conditions
+- Detects tiles as objects with bounding boxes + orientation (if reliable)
+- Single-pass detection is faster than multi-stage edge processing
+- Better handles partial occlusions and tile gaps
+
+**Detection Output:**
 ```swift
-// Enhanced plane data with transformation info
-struct PlaneData {
-    var width: Float
-    var height: Float
-    var position: SIMD3<Float>      // Center position in world space
-    var transform: simd_float4x4     // Plane's orientation transform
-
-    // Computed properties
-    var corners3D: [SIMD3<Float>]    // Four corners in world space
-    var rotation: Float               // Plane rotation around Y-axis for orientation lock
-}
-
-// Transformation data
-struct PerspectiveTransform {
-    var sourceCorners: [CGPoint]      // Pixel coordinates of plane corners
-    var destinationSize: CGSize       // Output image dimensions
-    var transformMatrix: CGAffineTransform?  // Optional cached transform
-    var timestamp: TimeInterval       // When transform was calculated
-}
-
-// Camera capture with metadata
-struct CapturedFrame {
-    var image: UIImage                // Raw camera image
-    var transform: PerspectiveTransform  // Associated transformation
-    var planeData: PlaneData          // Plane state at capture time
-    var cameraTransform: simd_float4x4   // Camera pose at capture time
+struct DetectedTile {
+    let boundingBox: CGRect      // Tile location in image
+    let rotation: Float          // Detected tile rotation (-180° - 180°)
+    let confidence: Float        // Detection confidence
 }
 ```
 
-### 3.2 Core Components
+### 4.2 YOLO Model Architecture
 
-**PerspectiveTransformCalculator**
+**Model Choice: YOLOv8-nano or YOLOv5-nano**
+
+Rationale:
+- Optimized for mobile deployment
+- Single-class detection (just "tile")
+- Includes rotation estimation
+- CoreML compatible
+
+**Training Configuration:**
+```
+Input: Variable size (640×640 recommended)
+Classes: 1 (Carcassonne tile)
+Output: Bounding boxes + rotation angle + confidence
+```
+
+**Training Data Requirements:**
+- 500+ annotated board images
+- Various lighting conditions
+- Different camera angles
+- Rotated boards
+- Partial boards (mid-game states)
+
+### 4.3 Individual Tile Extraction
+
+Extract each detected tile as a separate image for classification.
+
+**Process:**
 ```swift
-class PerspectiveTransformCalculator {
-    // Calculate 3D corners from plane data
-    static func calculatePlaneCorners(planeData: PlaneData) -> [SIMD3<Float>]
+func extractTiles(from image: UIImage, detections: [DetectedTile]) -> [ExtractedTile] {
+    return detections.map { detection in
+        // Crop bounding box region
+        let cropped = cropImage(image, to: detection.boundingBox)
 
-    // Project 3D corners to 2D image coordinates
-    static func projectCornersToImage(
-        corners3D: [SIMD3<Float>],
-        camera: ARCamera,
-        imageResolution: CGSize
-    ) -> [CGPoint]
+        // Rotate to normalize orientation
+        let normalized = rotateImage(cropped, by: -detection.rotation)
 
-    // Compute output dimensions maintaining aspect ratio
-    static func calculateOutputSize(
-        planeData: PlaneData,
-        maxWidth: CGFloat
-    ) -> CGSize
+        // Resize to classifier input size
+        let resized = resize(normalized, to: CGSize(width: 64, height: 64))
 
-    // Create full transformation data
-    static func createTransform(
-        planeData: PlaneData,
-        camera: ARCamera,
-        imageResolution: CGSize,
-        outputMaxWidth: CGFloat
-    ) -> PerspectiveTransform
+        return ExtractedTile(
+            image: resized,
+            position: calculateGridPosition(detection.boundingBox),
+            rotation: detection.rotation
+        )
+    }
 }
 ```
 
-**ImageTransformProcessor**
-```swift
-class ImageTransformProcessor {
-    // Apply perspective correction to image
-    static func applyPerspectiveCorrection(
-        image: UIImage,
-        transform: PerspectiveTransform
-    ) -> UIImage?
+### 4.4 Preprocessing for Classification
 
-    // Enhanced version with quality settings
-    static func applyPerspectiveCorrectionEnhanced(
-        image: UIImage,
-        transform: PerspectiveTransform,
-        interpolationQuality: CGInterpolationQuality,
-        applySharpening: Bool
-    ) -> UIImage?
+Normalize extracted tiles for consistent ML input.
+
+**Steps:**
+1. Crop using YOLO bounding box
+2. Apply rotation correction (align to 0°)
+3. Resize to 64×64 (or 128×128)
+4. Apply contrast normalization
+5. Convert to ML-compatible tensor format
+
+---
+
+## 5. Tile Classification System (Planned)
+
+### 5.1 Edge-Based Classification Approach
+
+Instead of classifying 84 different tile types, the model classifies **tile edges and features**. This approach offers significant advantages:
+
+**Why Edge-Based Classification:**
+- **Simplified problem**: 4 edge types instead of 84 tile classes
+- **Training data multiplication**: Each tile provides 4 edge samples (4× more training data)
+- **Better generalization**: Fewer classes = more robust with limited data
+- **Expansion-friendly**: New tile sets only need edge recognition, not new classes
+
+**Classification Output:**
+```swift
+struct TileClassification {
+    // Edge types for each direction
+    let northEdge: EdgeType       // field, road, city, river
+    let eastEdge: EdgeType
+    let southEdge: EdgeType
+    let westEdge: EdgeType
+
+    // Tile features
+    let hasShield: Bool           // Contains shield emblem
+    let hasMonastery: Bool        // Contains monastery in center
+    let hasSeparatedCities: Bool  // Multiple city edges are NOT connected internally
+
+    // Confidence scores
+    let edgeConfidences: [Direction: Float]
+    let featureConfidences: (shield: Float, monastery: Float, separated: Float)
 }
 ```
 
-**ARFrameCapture (Enhanced Coordinator)**
+**Separated Cities Explanation:**
+
+Some tiles have multiple city edges. These can be either:
+- **Connected**: City edges form a single contiguous city (scored together)
+- **Separated**: City edges are independent cities (scored separately)
+
+```
+Connected (single city):          Separated (two cities):
+┌─────────────────┐              ┌─────────────────┐
+│▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│              │▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓  │
+│    ▓▓▓▓▓▓▓▓▓▓▓▓▓│              │    ▓▓▓▓▓▓▓     ▓│
+│            ▓▓▓▓▓│              │              ▓▓▓│
+│             ▓▓▓▓│              │              ▓▓▓│
+│              ▓▓▓│              │              ▓▓▓│
+│                ▓│              │                ▓│
+└─────────────────┘              └─────────────────┘
+  N+E cities wrap                  N and E cities
+  around corner                    are separate
+```
+```
+Connected (single city):          Separated (two cities):
+┌─────────────────┐              ┌─────────────────┐
+│▓▓             ▓▓│              │▓               ▓│
+│▓▓▓▓▓       ▓▓▓▓▓│              │▓▓▓           ▓▓▓│
+│▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│              │▓▓▓           ▓▓▓│
+│▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│              │▓▓▓           ▓▓▓│
+│▓▓▓▓▓       ▓▓▓▓▓│              │▓▓▓           ▓▓▓│
+│▓▓             ▓▓│              │▓               ▓│
+└─────────────────┘              └─────────────────┘
+  W+E cities create                W and E cities
+  a corridor                       are separate
+```
+
+### 5.2 Model Architecture
+
+**Primary Choice: MobileNetV2 with Multi-Head Output**
+
+```
+Input: 64×64×3 RGB image (normalized tile)
+
+Base: MobileNetV2 (pretrained on ImageNet, frozen initially)
+  │
+  └─▶ GlobalAveragePooling2D
+        │
+        └─▶ Dense(256, relu) + Dropout(0.3)
+              │
+              ├─▶ Dense(4, softmax) → North Edge  [field, road, city, river]
+              ├─▶ Dense(4, softmax) → East Edge
+              ├─▶ Dense(4, softmax) → South Edge
+              ├─▶ Dense(4, softmax) → West Edge
+              ├─▶ Dense(1, sigmoid) → Has Shield
+              ├─▶ Dense(1, sigmoid) → Has Monastery
+              └─▶ Dense(1, sigmoid) → Has Separated Cities
+
+Total outputs: 4×4 + 3 = 19 values
+```
+
+**Alternative Approach: Single Edge Classifier**
+
+Train a model that classifies a single edge, then run it 4 times (once per edge):
+- Input: Cropped edge region (e.g., top 1/4 of tile for North edge)
+- Output: 4-class softmax (field, road, city, river)
+- Advantage: Even simpler model, more training data per class
+- Disadvantages: Loses context from tile center (monastery, shield, city connectivity); Has to be run multiple times on a single tile increasing inference time. 
+
+### 5.3 Training Strategy
+
+**Dataset Requirements:**
+- Target: 300+ tile images (not per-class!)
+- Each tile image yields 4 edge training samples = 1,200+ edge samples
+- Collection: Use app's export feature to capture real tiles
+
+**Training Data Format:**
+```python
+# Each tile image is labeled with:
+{
+    "image": "tile_001.png",
+    "edges": {
+        "north": "city",
+        "east": "city",
+        "south": "field",
+        "west": "field"
+    },
+    "has_shield": true,
+    "has_monastery": false,
+    "has_separated_cities": false  # N and E cities are connected
+}
+```
+
+**Data Augmentation:**
+| Augmentation     | Range                 | Purpose              |
+|------------------|-----------------------|----------------------|
+| 90° Rotations    | 0°, 90°, 180°, 270°   | Rotate tile + labels |
+| Brightness       | ±20%                  | Lighting variation   |
+| Contrast         | ±15%                  | Different conditions |
+| Gaussian Noise   | σ=0.02                | Sensor noise         |
+| Slight Rotation  | ±5°                   | Imperfect alignment  |
+| Scale            | 95-105%               | Size variation       |
+
+**Label Rotation for Augmentation:**
+```python
+def rotate_labels(labels, degrees):
+    """Rotate edge labels when image is rotated."""
+    edges = labels['edges']
+    order = ['north', 'east', 'south', 'west']
+    shift = degrees // 90
+    rotated_order = order[-shift:] + order[:-shift]
+    rotated_edges = {rotated_order[i]: edges[order[i]] for i in range(4)}
+
+    return {
+        'edges': rotated_edges,
+        'has_shield': labels['has_shield'],
+        'has_monastery': labels['has_monastery'],
+        'has_separated_cities': labels['has_separated_cities']  # Unchanged by rotation
+    }
+```
+
+**Training Parameters:**
+```python
+# Multi-task loss: weighted sum of edge losses + feature losses
+losses = {
+    'north_edge': 'categorical_crossentropy',
+    'east_edge': 'categorical_crossentropy',
+    'south_edge': 'categorical_crossentropy',
+    'west_edge': 'categorical_crossentropy',
+    'has_shield': 'binary_crossentropy',
+    'has_monastery': 'binary_crossentropy',
+    'has_separated_cities': 'binary_crossentropy'
+}
+
+loss_weights = {
+    'north_edge': 1.0, 'east_edge': 1.0,
+    'south_edge': 1.0, 'west_edge': 1.0,
+    'has_shield': 0.5, 'has_monastery': 0.5,
+    'has_separated_cities': 0.5
+}
+
+optimizer = Adam(learning_rate=0.0001)
+epochs = 50
+batch_size = 32
+```
+
+### 5.4 Tile Reconstruction from Edges
+
+After classification, reconstruct the tile type by matching detected edges and features to known tile definitions.
+
+**Matching Algorithm:**
 ```swift
-class ARFrameCapture {
-    var arView: ARView?
-
-    // Capture current frame with full metadata
-    func captureFrameWithTransform(
-        planeData: PlaneData
-    ) -> CapturedFrame?
-
-    // For live mode: continuous capture
-    func startLiveCapture(
-        interval: TimeInterval,
-        callback: @escaping (CapturedFrame) -> Void
+func reconstructTileType(classification: TileClassification) -> (TileType, Int)? {
+    let detectedEdges = TileEdges(
+        north: classification.northEdge,
+        east: classification.eastEdge,
+        south: classification.southEdge,
+        west: classification.westEdge
     )
 
-    func stopLiveCapture()
-}
-```
+    // Try all tile types and rotations
+    for tileType in TileType.allCases {
+        // Skip if features don't match
+        if tileType.hasShield != classification.hasShield { continue }
+        if tileType.hasMonastery != classification.hasMonastery { continue }
+        if tileType.hasSeparatedCities != classification.hasSeparatedCities { continue }
 
-### 3.3 Integration Points
-
-**ARViewContainer Updates**
-```swift
-struct ARViewContainer: UIViewRepresentable {
-    @Binding var planeData: PlaneData?
-    @Binding var capturedFrame: CapturedFrame?
-    @Binding var captureNow: Bool
-
-    class Coordinator {
-        func captureCameraFrameWithTransform() {
-            // Get current frame
-            guard let frame = arView?.session.currentFrame,
-                  let planeData = parent.planeData else { return }
-
-            // Calculate transformation
-            let transform = PerspectiveTransformCalculator.createTransform(
-                planeData: planeData,
-                camera: frame.camera,
-                imageResolution: CGSize(width: 1920, height: 1440), // ARKit image size
-                outputMaxWidth: 1024
-            )
-
-            // Create captured frame
-            let capturedFrame = CapturedFrame(
-                image: extractUIImage(from: frame),
-                transform: transform,
-                planeData: planeData,
-                cameraTransform: frame.camera.transform
-            )
-
-            // Update binding
-            parent.capturedFrame = capturedFrame
-        }
-    }
-}
-```
-
-**View2D Updates**
-```swift
-struct View2D: View {
-    var capturedFrame: CapturedFrame?
-    @State private var transformedImage: UIImage?
-    @State private var isProcessing: Bool = false
-
-    var body: some View {
-        // Show loading indicator while processing
-        if isProcessing {
-            ProgressView("Transforming...")
-        }
-
-        // Display transformed image
-        if let transformed = transformedImage {
-            Image(uiImage: transformed)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-        }
-    }
-
-    // Process transformation when frame is available
-    func processTransformation() {
-        guard let frame = capturedFrame else { return }
-
-        isProcessing = true
-
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = ImageTransformProcessor.applyPerspectiveCorrection(
-                image: frame.image,
-                transform: frame.transform
-            )
-
-            DispatchQueue.main.async {
-                transformedImage = result
-                isProcessing = false
+        // Check all rotations
+        for rotation in [0, 90, 180, 270] {
+            let canonicalEdges = tileType.edges.rotated(by: rotation)
+            if canonicalEdges == detectedEdges {
+                return (tileType, rotation)
             }
         }
     }
+
+    return nil  // No matching tile found (possible misclassification)
+}
+```
+
+**Handling Ambiguity:**
+
+Some edge combinations may match multiple tile types. Resolution strategies:
+1. Use shield/monastery/separated flags to disambiguate
+2. Return all possible matches with confidence scores
+3. Consider game context (remaining tiles in inventory)
+
+### 5.5 CoreML Integration
+
+**Model Conversion:**
+```python
+import coremltools as ct
+
+mlmodel = ct.convert(
+    keras_model,
+    inputs=[ct.ImageType(shape=(1, 64, 64, 3), scale=1/255.0, name="tile_image")],
+    outputs=[
+        ct.TensorType(name="north_edge"),
+        ct.TensorType(name="east_edge"),
+        ct.TensorType(name="south_edge"),
+        ct.TensorType(name="west_edge"),
+        ct.TensorType(name="has_shield"),
+        ct.TensorType(name="has_monastery"),
+        ct.TensorType(name="has_separated_cities")
+    ]
+)
+mlmodel.save("CarcassonneTileClassifier.mlmodel")
+```
+
+**Swift Integration:**
+```swift
+class TileClassifier {
+    private let model: CarcassonneTileClassifier
+
+    func classify(tile: UIImage) -> TileClassification? {
+        guard let pixelBuffer = tile.toPixelBuffer(width: 64, height: 64) else { return nil }
+        guard let prediction = try? model.prediction(tile_image: pixelBuffer) else { return nil }
+
+        let edgeTypes: [EdgeType] = [.field, .road, .city, .river]
+
+        func parseEdge(_ output: MLMultiArray) -> (EdgeType, Float) {
+            let probs = (0..<4).map { Float(truncating: output[$0]) }
+            let maxIdx = probs.indices.max(by: { probs[$0] < probs[$1] })!
+            return (edgeTypes[maxIdx], probs[maxIdx])
+        }
+
+        let (northEdge, northConf) = parseEdge(prediction.north_edge)
+        let (eastEdge, eastConf) = parseEdge(prediction.east_edge)
+        let (southEdge, southConf) = parseEdge(prediction.south_edge)
+        let (westEdge, westConf) = parseEdge(prediction.west_edge)
+
+        let shieldProb = Float(truncating: prediction.has_shield[0])
+        let monasteryProb = Float(truncating: prediction.has_monastery[0])
+        let separatedProb = Float(truncating: prediction.has_separated_cities[0])
+
+        return TileClassification(
+            northEdge: northEdge,
+            eastEdge: eastEdge,
+            southEdge: southEdge,
+            westEdge: westEdge,
+            hasShield: shieldProb > 0.5,
+            hasMonastery: monasteryProb > 0.5,
+            hasSeparatedCities: separatedProb > 0.5,
+            edgeConfidences: [.north: northConf, .east: eastConf, .south: southConf, .west: westConf],
+            featureConfidences: (shield: shieldProb, monastery: monasteryProb, separated: separatedProb)
+        )
+    }
+}
+```
+
+### 5.6 Future: Pawn Detection
+
+Player pawns (meeples) placed on tiles affect scoring ownership. Pawn detection is planned as a future feature.
+
+**Approach Options:**
+1. **YOLO multi-class**: Extend tile detector to also detect pawns by color
+2. **Separate pawn detector**: Dedicated small model for pawn detection
+3. **Color segmentation**: Simple CV approach using HSV color thresholds
+
+**Pawn Detection Output:**
+```swift
+struct DetectedPawn {
+    let color: PlayerColor           // red, blue, yellow, green, black
+    let position: CGPoint            // Position within tile image
+    let placementType: PawnPlacement // road, city, monastery, field
+    let confidence: Float
+}
+
+enum PlayerColor: String, CaseIterable {
+    case red, blue, yellow, green, black
+}
+
+enum PawnPlacement {
+    case road, city, monastery, field
+}
+```
+
+**Challenges:**
+- Small object detection (pawns are ~5% of tile area)
+- Color variation under different lighting
+- Pawn orientation and shadows
+- Distinguishing placement type (which feature the pawn claims)
+
+---
+
+## 6. Game State Engine (Planned)
+
+### 6.1 Board Representation
+
+**Grid-Based Board Model:**
+```swift
+struct BoardState: Codable {
+    private(set) var tiles: [GridPosition: PlacedTile]
+    private(set) var bounds: GridBounds
+
+    mutating func place(tile: PlacedTile) {
+        tiles[tile.position] = tile
+        bounds.expand(to: tile.position)
+    }
+
+    func tile(at position: GridPosition) -> PlacedTile? {
+        return tiles[position]
+    }
+
+    func adjacentPositions(to position: GridPosition) -> [GridPosition] {
+        Direction.allCases.map { position.adjacent($0) }
+    }
+
+    func emptyAdjacentPositions() -> [GridPosition] {
+        // All empty positions adjacent to at least one placed tile
+    }
+
+    func validPlacements(for tileType: TileType) -> [ValidPlacement] {
+        // Return all valid positions and rotations
+    }
+}
+
+struct GridPosition: Hashable, Codable {
+    let row: Int  // +Y = North
+    let col: Int  // +X = East
+
+    func adjacent(_ direction: Direction) -> GridPosition {
+        switch direction {
+        case .north: return GridPosition(row: row + 1, col: col)
+        case .south: return GridPosition(row: row - 1, col: col)
+        case .east:  return GridPosition(row: row, col: col + 1)
+        case .west:  return GridPosition(row: row, col: col - 1)
+        }
+    }
+}
+
+struct PlacedTile: Codable {
+    let type: TileType
+    let rotation: Int  // 0, 90, 180, 270
+    let position: GridPosition
+
+    var edges: TileEdges {
+        type.edges.rotated(by: rotation)
+    }
+}
+
+struct GridBounds: Codable {
+    var minRow: Int
+    var maxRow: Int
+    var minCol: Int
+    var maxCol: Int
+
+    var width: Int { maxCol - minCol + 1 }
+    var height: Int { maxRow - minRow + 1 }
+
+    mutating func expand(to position: GridPosition) {
+        minRow = min(minRow, position.row)
+        maxRow = max(maxRow, position.row)
+        minCol = min(minCol, position.col)
+        maxCol = max(maxCol, position.col)
+    }
+}
+```
+
+### 6.2 Edge Matching Rules
+
+**Edge Types:**
+```swift
+enum EdgeType: String, CaseIterable, Codable {
+    case field = "F"    // Green grass texture, connects to other fields
+    case road = "R"     // White/beige path, must connect to road edges
+    case city = "C"     // Brown/orange walls, must connect to city edges
+    case river = "W"    // Blue water, only matches river edges, placed before regular tiles
+}
+
+struct TileEdges: Codable, Equatable {
+    let north: EdgeType
+    let east: EdgeType
+    let south: EdgeType
+    let west: EdgeType
+
+    func rotated(by degrees: Int) -> TileEdges {
+        switch degrees % 360 {
+        case 90:  return TileEdges(north: west, east: north, south: east, west: south)
+        case 180: return TileEdges(north: south, east: west, south: north, west: east)
+        case 270: return TileEdges(north: east, east: south, south: west, west: north)
+        default:  return self
+        }
+    }
+
+    func edge(facing direction: Direction) -> EdgeType {
+        switch direction {
+        case .north: return north
+        case .east:  return east
+        case .south: return south
+        case .west:  return west
+        }
+    }
+}
+```
+
+**Matching Rules:**
+```swift
+func canPlace(tile: TileType, rotation: Int, at position: GridPosition, board: BoardState) -> Bool {
+    let edges = tile.edges.rotated(by: rotation)
+
+    // Check all adjacent tiles
+    for direction in Direction.allCases {
+        if let neighbor = board.tile(at: position.adjacent(direction)) {
+            let neighborEdge = neighbor.edges.edge(facing: direction.opposite)
+            let tileEdge = edges.edge(facing: direction)
+
+            if !edgesMatch(tileEdge, neighborEdge) {
+                return false
+            }
+        }
+    }
+
+    // At least one neighbor required (except first tile)
+    return board.tiles.isEmpty || hasAdjacentTile(position, board)
+}
+
+func edgesMatch(_ a: EdgeType, _ b: EdgeType) -> Bool {
+    return a == b  // Same type matches; river only matches river
+}
+```
+
+### 6.3 Remaining Tiles Calculation
+
+**Tile Inventory:**
+```swift
+struct TileInventory: Codable {
+    private var counts: [TileType: Int]
+
+    init(edition: GameEdition) {
+        counts = edition.initialTileCounts
+    }
+
+    mutating func remove(_ type: TileType) {
+        counts[type, default: 0] -= 1
+    }
+
+    func remaining(_ type: TileType) -> Int {
+        return counts[type, default: 0]
+    }
+
+    var totalRemaining: Int {
+        return counts.values.reduce(0, +)
+    }
+
+    var remainingByCategory: [TileCategory: Int] {
+        // Group counts by category
+    }
+}
+```
+
+### 6.4 Placement Validation
+
+**Valid Placement Finder:**
+```swift
+func findValidPlacements(for tile: TileType, on board: BoardState) -> [ValidPlacement] {
+    var placements: [ValidPlacement] = []
+
+    for position in board.emptyAdjacentPositions() {
+        for rotation in [0, 90, 180, 270] {
+            if canPlace(tile: tile, rotation: rotation, at: position, board: board) {
+                placements.append(ValidPlacement(
+                    position: position,
+                    rotation: rotation,
+                    tile: tile
+                ))
+            }
+        }
+    }
+
+    return placements
+}
+
+struct ValidPlacement: Hashable {
+    let position: GridPosition
+    let rotation: Int
+    let tileType: TileType
+}
+```
+
+### 6.5 Probability Calculation
+
+**Calculate probability of drawing a tile that fits a specific position:**
+
+```swift
+func probabilityOfFit(at position: GridPosition, board: BoardState, inventory: TileInventory) -> PlacementAnalysis {
+    var matchingTileCount = 0
+    var matchingTypes: [TileType] = []
+    var totalRemaining = 0
+
+    for tileType in TileType.allCases {
+        let count = inventory.remaining(tileType)
+        if count > 0 {
+            totalRemaining += count
+
+            for rotation in [0, 90, 180, 270] {
+                if canPlace(tile: tileType, rotation: rotation, at: position, board: board) {
+                    matchingTileCount += count
+                    matchingTypes.append(tileType)
+                    break // Count tile type only once even if multiple rotations work
+                }
+            }
+        }
+    }
+
+    let probability = totalRemaining > 0 ? Float(matchingTileCount) / Float(totalRemaining) : 0
+
+    return PlacementAnalysis(
+        position: position,
+        probability: probability,
+        validTileCount: matchingTileCount,
+        matchingTiles: matchingTypes
+    )
+}
+
+struct PlacementAnalysis {
+    let position: GridPosition
+    let probability: Float  // 0.0 - 1.0
+    let validTileCount: Int
+    let matchingTiles: [TileType]
+}
+```
+
+**Display Format:**
+- Show valid tiles remaining number on each empty position
+- Color code: Green (>10%), Yellow (3-10%), Red (<3%)
+- Show "No valid tiles" for positions with 0% probability
+
+---
+
+## 7. Scoring System (Future)
+
+### 7.1 Overview
+
+The scoring system calculates **additional points** players could gain, not cumulative game scores. This helps players understand the value of completing features.
+
+**Two Score Types:**
+
+| Type                | Description                                       | Use Case                                                     |
+|---------------------|---------------------------------------------------|--------------------------------------------------------------|
+| **Potential Score** | Points gained if feature is completed             | "If you finish this city, you get +12 points"                |
+| **Current Score**   | Points gained if game ends now (incomplete value) | "If game ends now, this incomplete road gives you +2 points" |
+
+### 7.2 Feature Detection
+
+**Feature Types:**
+```swift
+enum Feature {
+    case road(tiles: [GridPosition], isComplete: Bool)
+    case city(tiles: [GridPosition], shields: Int, isComplete: Bool)
+    case monastery(center: GridPosition, surroundingCount: Int)
+}
+```
+
+**Feature Tracing:**
+Traces connected edges to identify complete features. See Section 6.2 for edge definitions.
+
+### 7.3 Point Calculation
+
+**Potential Score (if completed):**
+| Feature             | Points                     |
+|---------------------|----------------------------|
+| Road                | 1 per tile in road         |
+| City (no shields)   | 2 per tile                 |
+| City (with shields) | 2 per tile + 2 per shield  |
+| Monastery           | 9 (center + 8 surrounding) |
+
+**Current Score (if game ends now):**
+| Feature              | Points                                   |
+|----------------------|------------------------------------------|
+| Incomplete Road      | 1 per tile                               |
+| Incomplete City      | 1 per tile + 1 per shield                |
+| Incomplete Monastery | 1 per tile (center + filled surrounding) |
+
+### 7.4 Display
+
+```swift
+struct ScoreAnalysis {
+    let features: [ScoredFeature]
+}
+
+struct ScoredFeature {
+    let feature: Feature
+    let potentialValue: Int
+    let currentValue: Int
+    let owningPlayer: PlayerColor?
 }
 ```
 
 ---
 
-## 4. Core Image Implementation
+## 8. Additional Data Models
 
-### 4.1 CIPerspectiveCorrection Filter
+This section defines models not covered in previous sections.
+
+### 8.1 TileType Enum
 
 ```swift
-func applyPerspectiveCorrection(
-    image: UIImage,
-    transform: PerspectiveTransform
-) -> UIImage? {
-    guard let ciImage = CIImage(image: image) else { return nil }
+enum TileType: String, CaseIterable, Codable {
+    // Base game - City configurations (43 tiles)
+    case cityFull                    // Full city (4 walls)
+    case cityThreeSides              // City on 3 sides
+    case cityTwoAdjacentConnected    // City on 2 adjacent sides, connected
+    case cityTwoAdjacentSeparated    // City on 2 adjacent sides, separated
+    case cityTwoOppositeConnected    // City on 2 opposite sides, connected (corridor)
+    case cityTwoOppositeSeparated    // City on 2 opposite sides, separated
+    // ... (complete enumeration of all 72 base types)
 
-    // Create filter
-    guard let filter = CIFilter(name: "CIPerspectiveCorrection") else {
-        return nil
-    }
+    // River expansion (12 tiles)
+    case riverSource
+    case riverEnd
+    case riverStraight
+    case riverCurve
+    // ... (complete enumeration of all 12 river types)
 
-    filter.setValue(ciImage, forKey: kCIInputImageKey)
+    var edges: TileEdges { /* return edge configuration */ }
+    var hasShield: Bool { /* return if tile has shield */ }
+    var hasMonastery: Bool { /* return if tile has monastery */ }
+    var hasSeparatedCities: Bool { /* return if multiple city edges are independent */ }
+    var category: TileCategory { /* return category */ }
+}
 
-    // Set corner points (Core Image uses bottom-left origin)
-    let imageHeight = ciImage.extent.height
-    let corners = transform.sourceCorners
-
-    // Convert UIKit coordinates (top-left origin) to Core Image (bottom-left origin)
-    filter.setValue(
-        CIVector(x: corners[3].x, y: imageHeight - corners[3].y), // Bottom-left
-        forKey: "inputBottomLeft"
-    )
-    filter.setValue(
-        CIVector(x: corners[2].x, y: imageHeight - corners[2].y), // Bottom-right
-        forKey: "inputBottomRight"
-    )
-    filter.setValue(
-        CIVector(x: corners[0].x, y: imageHeight - corners[0].y), // Top-left
-        forKey: "inputTopLeft"
-    )
-    filter.setValue(
-        CIVector(x: corners[1].x, y: imageHeight - corners[1].y), // Top-right
-        forKey: "inputTopRight"
-    )
-
-    // Get output
-    guard let outputImage = filter.outputImage else { return nil }
-
-    // Render to UIImage
-    let context = CIContext(options: [
-        .useSoftwareRenderer: false,
-        .highQualityDownsample: true
-    ])
-
-    guard let cgImage = context.createCGImage(
-        outputImage,
-        from: outputImage.extent
-    ) else { return nil }
-
-    return UIImage(cgImage: cgImage)
+enum TileCategory: String, Codable {
+    case city
+    case road
+    case monastery
+    case river
+    case mixed
 }
 ```
 
-### 4.2 Corner Ordering Convention
+### 8.2 GameSession Structure
 
-```
-Source (Camera Image):          Destination (Top-Down):
-     0 -------- 1                    0 -------- 1
-    /            \                   |          |
-   /              \                  |          |
-  3 -------------- 2                 3 -------- 2
-
-0 = Top-Left
-1 = Top-Right
-2 = Bottom-Right
-3 = Bottom-Left
-```
-
----
-
-## 5. Performance Considerations
-
-### 5.1 Optimization Strategies
-
-**Computation Caching**
-- Cache transformation matrix until plane updates
-- Only recalculate when plane anchor changes significantly
-- Use timestamp comparison to detect stale data
-
-**Image Resolution Management**
 ```swift
-// Use lower resolution for live mode
-let resolution: CGSize = liveMode ?
-    CGSize(width: 960, height: 720) :   // Live: 720p
-    CGSize(width: 1920, height: 1440)   // Snapshot: 1080p
-```
+struct GameSession: Codable {
+    let id: UUID
+    let createdAt: Date
+    var lastModified: Date
 
-**Async Processing**
-```swift
-// Never block main thread
-DispatchQueue.global(qos: .userInitiated).async {
-    let transformed = processImage(...)
-    DispatchQueue.main.async {
-        updateUI(transformed)
+    var edition: GameEdition
+    var board: BoardState          // See Section 6.1
+    var inventory: TileInventory   // See Section 6.3
+
+    var isComplete: Bool {
+        inventory.totalRemaining == 0
+    }
+}
+
+enum GameEdition: String, Codable {
+    case base = "BASE"
+    case baseWithRiver = "BASE_RIVER"
+
+    var initialTileCounts: [TileType: Int] {
+        // Return tile counts for edition
+    }
+
+    var totalTiles: Int {
+        switch self {
+        case .base: return 72
+        case .baseWithRiver: return 84
+        }
     }
 }
 ```
 
-**Metal Acceleration**
-- Core Image automatically uses GPU via Metal
-- Ensure CIContext is created with Metal device
-- Reuse CIContext instances (expensive to create)
-
-### 5.2 Memory Management
+### 8.3 Direction Enum
 
 ```swift
-// Singleton context for image processing
-class ImageProcessor {
-    static let shared = ImageProcessor()
-    private let context: CIContext
+enum Direction: CaseIterable {
+    case north, east, south, west
 
-    private init() {
-        // Create Metal-backed context once
-        if let device = MTLCreateSystemDefaultDevice() {
-            context = CIContext(mtlDevice: device, options: [
-                .cacheIntermediates: false, // Reduce memory footprint
-                .priorityRequestLow: false
-            ])
-        } else {
-            context = CIContext(options: [:])
+    var opposite: Direction {
+        switch self {
+        case .north: return .south
+        case .south: return .north
+        case .east:  return .west
+        case .west:  return .east
         }
     }
 }
@@ -416,234 +1102,162 @@ class ImageProcessor {
 
 ---
 
-## 6. Edge Cases and Error Handling
+## 9. Implementation Roadmap
 
-### 6.1 Problematic Scenarios
+### Phase 3: Tile Detection
+**Goal:** Detect and localize tiles using YOLO
 
-**Extreme Viewing Angles**
-- When camera is nearly parallel to plane, projection becomes unstable
-- Corners may project outside image bounds
-- Solution: Detect angle between camera and plane normal, warn user if < 20°
+**Tasks:**
+- Train YOLOv8-nano on annotated board images
+- Convert to CoreML format
+- Implement tile extraction from detections
+- Handle rotation normalization
 
+**Deliverables:**
+- `CarcassonneTileDetector.mlmodel` (YOLO)
+- `TileDetector.swift` - Detection wrapper
+- `TileExtractor.swift` - Crop and normalize tiles
+
+### Phase 4: Tile Classification
+**Goal:** Identify tile types using MobileNetV2
+
+**Tasks:**
+- Collect training data (300+ images per class)
+- Train MobileNetV2 with augmentation
+- Convert to CoreML format
+- Integrate with YOLO detection pipeline
+
+**Deliverables:**
+- `CarcassonneTileClassifier.mlmodel`
+- `TileClassifier.swift` - Classification wrapper
+- End-to-end detection + classification pipeline
+
+### Phase 5: Game Logic
+**Goal:** Track game state and validate placements
+
+**Tasks:**
+- Implement BoardState and tile placement
+- Encode all 84 tile edge configurations
+- Implement edge matching validation
+- Calculate remaining tiles and probabilities
+
+**Deliverables:**
+- `Models/BoardState.swift`
+- `Models/TileType.swift` (complete definitions)
+- `GameEngine/PlacementValidator.swift`
+- `GameEngine/ProbabilityCalculator.swift`
+
+### Phase 6: Helper Features
+**Goal:** User-facing assistance features
+
+**Tasks:**
+- Remaining tiles display UI
+- Valid placement overlay on AR view
+- Probability percentage display
+- Integration with existing AR/2D views
+
+**Deliverables:**
+- `Views/RemainingTilesView.swift`
+- `Views/PlacementOverlay.swift`
+- Updated ContentView integration
+
+### Phase 7: Polish & Scoring (Future)
+**Goal:** Production-ready UX and optional scoring
+
+**Tasks:**
+- AR overlay animations
+- Performance optimization
+- Scoring engine implementation
+- Error handling and edge cases
+
+---
+
+## 10. Performance Considerations
+
+### 10.1 On-Device ML Constraints
+
+**Target Device:** iPhone 12 or newer (A14 Bionic+)
+
+**Model Size Targets:**
+| Model                  | Size Target |
+|------------------------|-------------|
+| YOLO detector          | ~5-10MB     |
+| MobileNetV2 classifier | ~10-15MB    |
+| Total ML assets        | <25MB       |
+
+**Inference Time Targets:**
+| Operation                   | Target | Acceptable |
+|-----------------------------|--------|------------|
+| YOLO detection (full board) | <500ms | <1s        |
+| Single tile classification  | <10ms  | <20ms      |
+| Full pipeline (80 tiles)    | <1s    | <2s        |
+
+**Optimization Techniques:**
+- FP16 quantization
+- Neural Engine delegation (automatic in CoreML)
+- Batch inference for tile classification
+
+### 10.2 Memory Budget
+
+| Component        | Budget     |
+|------------------|------------|
+| AR session       | ~100MB     |
+| ML models        | ~50MB      |
+| Image buffers    | ~50MB      |
+| Game state       | <10MB      |
+| **Total target** | **<250MB** |
+
+### 10.3 Memory Management
+
+**Best Practices:**
 ```swift
-func isCameraAngleSafe(planeNormal: SIMD3<Float>, cameraDirection: SIMD3<Float>) -> Bool {
-    let angle = acos(dot(planeNormal, cameraDirection))
-    return angle > .pi / 9  // > 20 degrees
-}
-```
-
-**Partial Plane Visibility**
-- Some corners may be outside camera frustum
-- Solution: Check if projectPoint() returns valid coordinates within image bounds
-
-```swift
-func areAllCornersVisible(corners: [CGPoint], imageSize: CGSize) -> Bool {
-    return corners.allSatisfy { corner in
-        corner.x >= 0 && corner.x <= imageSize.width &&
-        corner.y >= 0 && corner.y <= imageSize.height
+// Use autorelease pools for batch processing
+for tile in extractedTiles {
+    autoreleasepool {
+        let result = classifier.classify(tile.image)
+        // Process result
     }
 }
 ```
 
-**Moving Camera/Plane**
-- Motion blur during capture
-- Plane detection updates during transformation
-- Solution: Freeze plane data at capture time, use high shutter speed if possible
-
-### 6.2 Quality Validation
-
-```swift
-struct TransformQuality {
-    var cameraAngle: Float       // Degrees from perpendicular
-    var allCornersVisible: Bool
-    var estimatedResolution: Float  // Pixels per meter
-
-    var isGoodQuality: Bool {
-        return cameraAngle < 70 &&   // Not too oblique
-               allCornersVisible &&
-               estimatedResolution > 100  // Sufficient detail
-    }
-}
-```
+- Reuse CVPixelBuffer for consecutive frames
+- Use shared CIContext (singleton pattern)
+- Clear processed images promptly
 
 ---
 
-## 7. Testing Strategy
+## 11. Testing Strategy
 
-### 7.1 Unit Tests
+### 11.1 Unit Tests for Game Logic
 
-- Test corner calculation with known plane parameters
-- Verify coordinate system conversions
-- Test transformation matrix computation
+**Test Categories:**
+- Edge matching: All valid/invalid edge combinations
+- Placement validation: Edge cases, first tile, surrounded positions
+- Probability calculation: Known game states with expected results
+- Tile inventory: Addition, removal, remaining counts
 
-### 7.2 Integration Tests
+### 11.2 ML Model Validation
 
-- Test with synthetic AR frames
-- Verify end-to-end transformation pipeline
-- Test performance benchmarks
+**Metrics:**
+- Per-class accuracy (target: >90%)
+- Confusion matrix analysis
+- Cross-validation on held-out set
 
-### 7.3 Device Testing Checklist
+**Real-World Testing:**
+- Different lighting conditions
+- Various camera angles
+- Worn/damaged tiles
 
-- [ ] Various table sizes (0.4m to 2m)
-- [ ] Different camera angles (30°, 45°, 60°, 75°)
-- [ ] Different camera distances (0.5m, 1m, 2m)
-- [ ] Various lighting conditions
-- [ ] Different surface textures and patterns
-- [ ] Moving objects on surface
-- [ ] Rectangular vs. square tables
-- [ ] Performance on different devices (iPhone 12+, iPad)
+### 11.3 Integration Testing
 
-### 7.4 Visual Validation
-
-Place reference objects with known dimensions:
-- Ruler or measuring tape
-- Square grid paper
-- Chess board (8x8 squares)
-- Rectangular book or card
-
-Verify transformed image shows:
-- Correct proportions
-- Right angles preserved
-- Parallel lines remain parallel
-- Accurate measurements
+**Scenarios:**
+- Full game simulation (72 tiles)
+- Mid-game recognition (partial boards)
+- River extension games
+- Rotated board captures
 
 ---
 
-## 8. Future Enhancements
-
-### 8.1 Advanced Features
-
-**Multi-Plane Support**
-- Detect and transform multiple surfaces simultaneously
-- Composite multiple planes into single view
-
-**Temporal Stability**
-- Use multiple frames to reduce noise
-- Average transformations over time
-- Optical flow for smooth transitions
-
-**Enhanced Geometry**
-- Use ARPlaneAnchor.geometry for precise boundaries
-- Handle non-rectangular plane shapes
-- Detect and mask objects above plane
-
-**Image Enhancement**
-- Auto white balance and exposure
-- Shadow removal
-- HDR compositing from multiple exposures
-
-### 8.2 AR Integration
-
-**Annotations Overlay**
-- Draw directly on transformed view
-- Project annotations back to AR view
-- Persistent coordinate system
-
-**Measurement Tools**
-- Distance measurement
-- Area calculation
-- Angle measurement
-
----
-
-## 9. References
-
-### Apple Documentation
-- [ARKit Framework](https://developer.apple.com/documentation/arkit)
-- [ARCamera](https://developer.apple.com/documentation/arkit/arcamera)
-- [ARPlaneAnchor](https://developer.apple.com/documentation/arkit/arplaneanchor)
-- [Core Image Filter Reference](https://developer.apple.com/library/archive/documentation/GraphicsImaging/Reference/CoreImageFilterReference/)
-- [CIPerspectiveCorrection](https://developer.apple.com/documentation/coreimage/ciperspectivecorrection)
-
-### Mathematical Background
-- Homography and perspective transformation
-- Camera projection models
-- Coordinate system transformations
-
----
-
-## 10. Implementation Roadmap
-
-### Phase 1: Foundation (Step 9)
-- Implement PerspectiveTransformCalculator
-- Calculate plane corners in 3D
-- Project to 2D camera coordinates
-- Validate coordinate transformations
-
-### Phase 2: Basic Transformation (Step 10)
-- Implement ImageTransformProcessor
-- Apply CIPerspectiveCorrection
-- Display transformed snapshot in View2D
-- Handle edge cases and errors
-
-### Phase 3: Live Mode (Step 11)
-- Implement continuous capture
-- Optimize for real-time performance
-- Add mode switching UI
-
-### Phase 4: Polish (Steps 12-15)
-- Orientation lock
-- Zoom/pan controls
-- Quality enhancements
-- Export functionality
-
----
-
-## Appendix A: Coordinate System Diagrams
-
-```
-ARKit World Space (Right-handed, Y-up):
-        Y (up)
-        |
-        |
-        +------ X (right)
-       /
-      Z (backward toward user)
-
-Camera Space (Right-handed, Z-forward):
-        Y (up in image)
-        |
-        |
-        +------ X (right in image)
-       /
-      Z (into scene, viewing direction)
-
-UIKit Image Space (Top-left origin):
-    (0,0) -------- X (right)
-      |
-      |
-      Y (down)
-
-Plane Local Space (on horizontal surface):
-        Y (normal, up)
-        |
-        |
-        +------ X (width)
-       /
-      Z (depth)
-```
-
-## Appendix B: Key Formulas
-
-**Plane Corner in World Space:**
-```
-corner = planeCenter + planeTransform * localOffset
-where localOffset ∈ {
-    (-w/2, 0, -h/2),  // Top-left
-    (+w/2, 0, -h/2),  // Top-right
-    (+w/2, 0, +h/2),  // Bottom-right
-    (-w/2, 0, +h/2)   // Bottom-left
-}
-```
-
-**Camera Projection:**
-```
-pixelCoord = camera.projectPoint(worldPoint)
-// Returns CGPoint in pixel coordinates relative to camera image resolution
-```
-
-**Aspect Ratio Preservation:**
-```
-outputAspectRatio = planeWidth / planeHeight
-outputHeight = outputWidth / outputAspectRatio
-```
+*Document Version: 2.0*
+*Last Updated: December 2025*
+*Status: Phase 1-2 Implemented, Phases 3-7 Planned*
