@@ -213,8 +213,10 @@ The app exports captured and transformed images to Photos Library for ML trainin
 
 **Export Format:**
 - File type: PNG (lossless)
-- Filename: `carcassonne_YYYYMMDD_HHmmss_ppmQQQQ.png`
-- Quality metric embedded in filename (pixels per meter)
+- Filename: `carcassonne_YYYYMMDD_HHmmss_ppmQQQQ_angleAA.png`
+- Quality metrics embedded in filename:
+  - `ppmQQQQ`: Pixels per meter (0000-9999)
+  - `angleAA`: Camera angle in degrees (00-90)
 
 **Implementation:** `ImageExporter.swift`
 - Uses PHPhotoLibrary with `.addOnly` authorization

@@ -128,8 +128,9 @@ class ImageExporter {
     }
 
     /// Generates filename with timestamp and quality metrics
-    /// Format: carcassonne_YYYYMMDD_HHmmss_ppmQQQQ.png
+    /// Format: carcassonne_YYYYMMDD_HHmmss_ppmQQQQ_angleAA.png
     /// Where QQQQ = pixels per meter (e.g., 847 ppm → "ppm0847")
+    ///       AA = camera angle in degrees (e.g., 45° → "angle45")
     private func generateFilename(from frame: CapturedFrame) -> String {
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
@@ -138,7 +139,10 @@ class ImageExporter {
         let qualityScore = Int(frame.transform.quality.estimatedPixelsPerMeter)
         let qualityString = String(format: "%04d", min(9999, max(0, qualityScore)))
 
-        return "carcassonne_\(timestamp)_ppm\(qualityString).png"
+        let cameraAngle = Int(frame.transform.quality.cameraAngleDegrees)
+        let angleString = String(format: "%02d", min(90, max(0, cameraAngle)))
+
+        return "carcassonne_\(timestamp)_ppm\(qualityString)_angle\(angleString).png"
     }
 
     /// Saves image data to Photos Library with embedded filename
