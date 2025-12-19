@@ -137,3 +137,7 @@ struct GridPosition: Hashable {
 
 - **TECHNICAL_DESIGN.md:** Complete technical specification with detailed algorithms, data models, and implementation roadmap
 - **TILE_CLASSIFICATION.md:** ML model requirements and architecture choices
+
+## Things to remember
+
+- Follow the git commit message convention. Use `git log -n 3` to get example commit messages.
