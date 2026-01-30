@@ -496,7 +496,7 @@ class ImageTransformProcessor {
         filter.setValue(ciBottomLeft, forKey: "inputBottomLeft")
 
         // Get output image
-        guard let outputImage = filter.outputImage else {
+        guard var outputImage = filter.outputImage else {
             AppLogger.imageProcessor.error("Filter produced no output image")
             return nil
         }
@@ -505,6 +505,36 @@ class ImageTransformProcessor {
         AppLogger.imageProcessor.debug("Filter Output:")
         AppLogger.imageProcessor.debug("  Output extent: \(String(describing: outputImage.extent))")
         AppLogger.imageProcessor.debug("  Output size: \(outputImage.extent.width, format: .fixed(precision: 0)) × \(outputImage.extent.height, format: .fixed(precision: 0))")
+
+        // Force output to be square by scaling
+        // The physical plane is square, but CIPerspectiveCorrection determines output dimensions
+        // based on the trapezoid geometry, which doesn't account for the known square shape
+        let desiredSize = perspectiveTransform.destinationSize.width  // Square: width == height
+        let outputWidth = outputImage.extent.width
+        let outputHeight = outputImage.extent.height
+
+        if abs(outputWidth - outputHeight) > 1 {
+            AppLogger.imageProcessor.debug("─────────────────────────────────────────────────────")
+            AppLogger.imageProcessor.debug("Scaling to square (physical plane is square):")
+            AppLogger.imageProcessor.debug("  Filter output: \(outputWidth, format: .fixed(precision: 0)) × \(outputHeight, format: .fixed(precision: 0))")
+            AppLogger.imageProcessor.debug("  Target size: \(desiredSize, format: .fixed(precision: 0)) × \(desiredSize, format: .fixed(precision: 0))")
+
+            let scaleX = desiredSize / outputWidth
+            let scaleY = desiredSize / outputHeight
+
+            AppLogger.imageProcessor.debug("  Scale factors: X=\(scaleX, format: .fixed(precision: 3)), Y=\(scaleY, format: .fixed(precision: 3))")
+
+            // Apply non-uniform scaling, then translate to origin (0,0)
+            let scaleTransform = CGAffineTransform(scaleX: scaleX, y: scaleY)
+            outputImage = outputImage.transformed(by: scaleTransform)
+
+            // Translate extent back to origin (scaling may shift it)
+            let translateTransform = CGAffineTransform(translationX: -outputImage.extent.origin.x,
+                                                        y: -outputImage.extent.origin.y)
+            outputImage = outputImage.transformed(by: translateTransform)
+
+            AppLogger.imageProcessor.debug("  After scaling: \(outputImage.extent.width, format: .fixed(precision: 0)) × \(outputImage.extent.height, format: .fixed(precision: 0))")
+        }
 
         // Render to CGImage
         guard let cgImage = ciContext.createCGImage(
