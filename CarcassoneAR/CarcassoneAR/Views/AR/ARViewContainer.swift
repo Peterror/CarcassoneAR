@@ -108,7 +108,7 @@ struct ARViewContainer: UIViewRepresentable {
                         coordinator.lockedPlaneTransform = planeAnchor.transform
 
                         // Calculate and update screen-centered capture region
-                        coordinator.updateScreenCenteredCaptureRegion(planeAnchor: nil)
+                        coordinator.updateScreenCenteredCaptureRegion()
                     }
                 }
             }
@@ -126,7 +126,7 @@ struct ARViewContainer: UIViewRepresentable {
 
                     }
                     // Recalculate screen-centered capture region (follows camera movement)
-                    coordinator.updateScreenCenteredCaptureRegion(planeAnchor: nil)
+                    coordinator.updateScreenCenteredCaptureRegion()
                 }
             }
         }
@@ -149,31 +149,46 @@ struct ARViewContainer: UIViewRepresentable {
         init() {
         }
 
-        /// Calculate and update the screen-centered capture region with phone-aligned rotation.
+        /// Result of computing the capture region for a single AR frame.
         ///
-        /// This is the main method that orchestrates the capture region calculation. It:
-        /// 1. Projects screen center onto the plane's infinite surface
-        /// 2. Calculates rotation quaternion to align with camera's full 3D orientation
+        /// Bundles the geometry derived from one frame so callers always work with a
+        /// self-consistent snapshot — image, corners, and plane data all originate from
+        /// the same camera pose. This is what prevents the projected corners from
+        /// drifting out of sync with the pixels they describe.
+        struct CaptureRegion {
+            let planeData: PlaneData
+            let cornersInImage: [CGPoint]
+            let imageResolution: CGSize
+            let planeAnchor: ARPlaneAnchor
+            let captureCenter: SIMD3<Float>
+        }
+
+        /// Compute the screen-centered square capture region for a specific frame.
+        ///
+        /// All geometry is derived from the supplied `frame`, guaranteeing the returned
+        /// corners correspond exactly to that frame's `capturedImage`. This is the single
+        /// source of truth used both for continuous visualization updates and for the
+        /// final capture, eliminating any mismatch between the image pixels and the
+        /// projected corners.
+        ///
+        /// The method:
+        /// 1. Raycasts from screen center onto the locked plane
+        /// 2. Calculates a rotation quaternion aligned with the camera's viewing direction
         /// 3. Finds the largest square that fits in the camera view
-        /// 4. Updates the 3D visualization (green mesh and cyan sphere)
-        /// 5. Stores the capture region data for later use during image capture
+        /// 4. Projects that square's corners back into image space
         ///
-        /// This method is called continuously as the plane updates and the camera moves, ensuring
-        /// the capture region always reflects the current screen center and phone orientation.
-        ///
-        /// - Parameters:
-        ///   - planeAnchor: The detected plane anchor (locked plane). If nil, the method will attempt to extract it from the raycast result.
-        func updateScreenCenteredCaptureRegion(planeAnchor: ARPlaneAnchor?) {
-            guard let frame = arView.session.currentFrame else { return }
-            if (lockedPlaneID == nil) { return }  // If no plane locked, return
-            
+        /// - Parameter frame: The ARFrame to compute the capture region from.
+        /// - Returns: A `CaptureRegion` snapshot, or nil if no plane is locked or the
+        ///            screen-center raycast misses the plane.
+        func computeCaptureRegion(for frame: ARFrame) -> CaptureRegion? {
+            guard lockedPlaneID != nil else { return nil }  // If no plane locked, return
+
             let imageResolution = CGSize(
                 width: CGFloat(CVPixelBufferGetWidth(frame.capturedImage)),
                 height: CGFloat(CVPixelBufferGetHeight(frame.capturedImage))
             )
 
             // Use ARRaycastQuery to find where screen center intersects the plane
-            // Create raycast query for existing plane geometry
             let raycastQuery = ARRaycastQuery(
                 origin: frame.camera.transform.columns.3.xyz,
                 direction: -frame.camera.transform.columns.2.xyz,
@@ -181,51 +196,19 @@ struct ARViewContainer: UIViewRepresentable {
                 alignment: .horizontal
             )
 
-            let raycastResults = arView.session.raycast(raycastQuery)
-
-            guard let firstResult = raycastResults.first else {
+            guard let firstResult = arView.session.raycast(raycastQuery).first else {
                 AppLogger.arCoordinator.error("Raycast did not hit plane")
-                return
+                return nil
             }
 
-            // Extract plane anchor from raycast result if not provided
-            let resolvedPlaneAnchor: ARPlaneAnchor
-            if let providedAnchor = planeAnchor {
-                resolvedPlaneAnchor = providedAnchor
-            } else {
-                // Try to extract plane anchor from raycast result
-                guard let anchor = firstResult.anchor as? ARPlaneAnchor else {
-                    AppLogger.arCoordinator.error("Raycast result does not contain a plane anchor")
-                    return
-                }
-                resolvedPlaneAnchor = anchor
-                AppLogger.arCoordinator.debug("Extracted plane anchor from raycast result")
+            guard let resolvedPlaneAnchor = firstResult.anchor as? ARPlaneAnchor else {
+                AppLogger.arCoordinator.error("Raycast result does not contain a plane anchor")
+                return nil
             }
 
-            // Extract plane position and orientation
-            let planePosition = SIMD3<Float>(
-                resolvedPlaneAnchor.transform.columns.3.xyz
-            )
-            let planeQuaternion = simd_quatf(resolvedPlaneAnchor.transform)
-            let planeEuler = planeQuaternion.toEulerAngles()
-
-            // Extract camera position and orientation
-            let cameraPosition = SIMD3<Float>(
-                frame.camera.transform.columns.3.xyz
-            )
-            let cameraQuaternion = simd_quatf(frame.camera.transform)
-            let cameraEuler = cameraQuaternion.toEulerAngles()
-
-            AppLogger.arCoordinator.debug("Plane & Camera Transforms:")
-            AppLogger.arCoordinator.debug("  Plane Position: (\(planePosition.x, format: .fixed(precision: 3)), \(planePosition.y, format: .fixed(precision: 3)), \(planePosition.z, format: .fixed(precision: 3)))")
-            AppLogger.arCoordinator.debug("  Plane Euler (deg): Roll=\(planeEuler.x, format: .fixed(precision: 1))°, Pitch=\(planeEuler.y, format: .fixed(precision: 1))°, Yaw=\(planeEuler.z, format: .fixed(precision: 1))°")
-            AppLogger.arCoordinator.debug("  Camera Position: (\(cameraPosition.x, format: .fixed(precision: 3)), \(cameraPosition.y, format: .fixed(precision: 3)), \(cameraPosition.z, format: .fixed(precision: 3)))")
-            AppLogger.arCoordinator.debug("  Camera Euler (deg): Roll=\(cameraEuler.x, format: .fixed(precision: 1))°, Pitch=\(cameraEuler.y, format: .fixed(precision: 1))°, Yaw=\(cameraEuler.z, format: .fixed(precision: 1))°")
-
-            // Extract the 3D world position where the ray hit the plane
-            let captureCenter = SIMD3<Float>(
-                firstResult.worldTransform.columns.3.xyz
-            )
+            let cameraPosition = frame.camera.transform.columns.3.xyz
+            // 3D world position where the screen-center ray hit the plane
+            let captureCenter = firstResult.worldTransform.columns.3.xyz
 
             AppLogger.arCoordinator.debug("  Raycast hit at: (\(captureCenter.x, format: .fixed(precision: 3)), \(captureCenter.y, format: .fixed(precision: 3)), \(captureCenter.z, format: .fixed(precision: 3)))")
 
@@ -246,32 +229,50 @@ struct ARViewContainer: UIViewRepresentable {
                 minDimension: 0.2
             )
 
-            // Update visualization with square region at screen center
-            updatePlaneVisualization(
-                planeAnchor: resolvedPlaneAnchor,
-                captureCenter: captureCenter,
-                rotationQuaternion: squareRegionData.rotationQuaternion,
-                width: squareRegionData.width,
-                height: squareRegionData.height
-            )
-
-            // Calculate projected corners for visualization
-            // Note: squareRegionData already contains rotationQuaternion, so we use it by default
+            // Project the square's corners back into this frame's image space
             let corners3D = PerspectiveTransformCalculator.calculatePlaneCorners(
                 planeData: squareRegionData
             )
-            let corners2D = PerspectiveTransformCalculator.projectCornersToImage(
+            let cornersInImage = PerspectiveTransformCalculator.projectCornersToImage(
                 corners3D: corners3D,
                 camera: frame.camera,
                 imageResolution: imageResolution
             )
 
+            return CaptureRegion(
+                planeData: squareRegionData,
+                cornersInImage: cornersInImage,
+                imageResolution: imageResolution,
+                planeAnchor: resolvedPlaneAnchor,
+                captureCenter: captureCenter
+            )
+        }
+
+        /// Recompute the screen-centered capture region and refresh the live overlay.
+        ///
+        /// Derives the region from the current frame, then updates the 3D visualization
+        /// and the bindings that drive the corner overlay. Called continuously as the
+        /// plane updates and the camera moves, so the overlay always reflects the current
+        /// screen center and phone orientation.
+        func updateScreenCenteredCaptureRegion() {
+            guard let frame = arView.session.currentFrame else { return }
+            guard let region = computeCaptureRegion(for: frame) else { return }
+
+            // Update visualization with square region at screen center
+            updatePlaneVisualization(
+                planeAnchor: region.planeAnchor,
+                captureCenter: region.captureCenter,
+                rotationQuaternion: region.planeData.rotationQuaternion,
+                width: region.planeData.width,
+                height: region.planeData.height
+            )
+
             // Update coordinator state and bindings immediately
             // ARSession delegate runs on main thread in iOS 26+
-            currentPlaneData = squareRegionData
-            lockedPlaneDataBinding.wrappedValue = squareRegionData
-            projectedCornersBinding.wrappedValue = corners2D
-            cameraImageSizeBinding.wrappedValue = imageResolution
+            currentPlaneData = region.planeData
+            lockedPlaneDataBinding.wrappedValue = region.planeData
+            projectedCornersBinding.wrappedValue = region.cornersInImage
+            cameraImageSizeBinding.wrappedValue = region.imageResolution
         }
 
         /// Update the 3D visualization of the capture region in the AR scene.
@@ -359,15 +360,15 @@ struct ARViewContainer: UIViewRepresentable {
         /// Capture the current camera frame and create a perspective transformation for it.
         ///
         /// This method is called when the user taps the "2D" button to capture the current view.
-        /// It reuses the transformation data already calculated in updateScreenCenteredCaptureRegion():
         /// 1. Captures the raw camera image from ARSession
-        /// 2. Converts CVPixelBuffer to UIImage with correct orientation
-        /// 3. Uses already-calculated corner positions from parent.projectedCorners
+        /// 2. Recomputes the capture region from that same frame via computeCaptureRegion(for:)
+        /// 3. Converts CVPixelBuffer to UIImage with correct orientation
         /// 4. Rotates corner coordinates to match portrait orientation
         /// 5. Packages everything into a CapturedFrame for display in View2D
         ///
-        /// Note: Most transformation calculations are done in updateScreenCenteredCaptureRegion(),
-        /// so this method simply captures the image and packages the pre-calculated data.
+        /// The corners are recomputed from the captured frame (rather than reused from the
+        /// live overlay bindings) so the projected corners always correspond to the exact
+        /// pixels being captured, even if the camera moved since the last overlay update.
         func captureCameraFrameWithTransform() {
             AppLogger.arCoordinator.info("═══════════════════════════════════════════════════════")
             AppLogger.arCoordinator.info("Capturing Camera Frame")
@@ -378,15 +379,18 @@ struct ARViewContainer: UIViewRepresentable {
                 return
             }
 
-            guard let planeData = currentPlaneData else {
-                AppLogger.arCoordinator.error("currentPlaneData is nil - no plane detected")
+            // Recompute the capture region from THIS frame so the projected corners
+            // correspond exactly to the pixels we are about to capture. Reusing the
+            // cached binding here would mismatch the image whenever the camera moved
+            // between the last overlay update and this capture.
+            guard let region = computeCaptureRegion(for: frame) else {
+                AppLogger.arCoordinator.error("Failed to compute capture region for current frame")
                 return
             }
 
-            guard let corners2D = projectedCornersBinding.wrappedValue else {
-                AppLogger.arCoordinator.error("projectedCorners is nil - transformation not calculated")
-                return
-            }
+            let planeData = region.planeData
+            let corners2D = region.cornersInImage
+            let imageResolution = region.imageResolution
 
             // Get the camera image buffer
             let pixelBuffer = frame.capturedImage
@@ -415,10 +419,8 @@ struct ARViewContainer: UIViewRepresentable {
             AppLogger.arCoordinator.debug("  UIImage.size (after .right orientation): \(uiImage.size.width, format: .fixed(precision: 0)) × \(uiImage.size.height, format: .fixed(precision: 0))")
             AppLogger.arCoordinator.debug("  UIImage.orientation: .right (rawValue: \(uiImage.imageOrientation.rawValue))")
 
-            // Use already-calculated image resolution from bindings
-            let imageResolution = cameraImageSizeBinding.wrappedValue
             AppLogger.arCoordinator.debug("─────────────────────────────────────────────────────")
-            AppLogger.arCoordinator.debug("Cached Image Resolution: \(imageResolution.width, format: .fixed(precision: 0)) × \(imageResolution.height, format: .fixed(precision: 0))")
+            AppLogger.arCoordinator.debug("Image Resolution: \(imageResolution.width, format: .fixed(precision: 0)) × \(imageResolution.height, format: .fixed(precision: 0))")
 
             // Log landscape corners (as projected by ARCamera)
             AppLogger.arCoordinator.debug("─────────────────────────────────────────────────────")
