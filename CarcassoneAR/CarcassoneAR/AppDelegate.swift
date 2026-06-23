@@ -8,6 +8,15 @@
 import UIKit
 import SwiftUI
 
+/// Restricts runtime rotation to the orientations the AR coordinate-transform
+/// pipeline supports (LandscapeRight + Portrait). The build settings declare all
+/// four orientations for iOS 26 compliance; this override is the actual constraint.
+final class OrientationLockedHostingController<Content: View>: UIHostingController<Content> {
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        [.landscapeRight, .portrait]
+    }
+}
+
 @main
 class AppDelegate: UIResponder, UIApplicationDelegate {
 
@@ -41,7 +50,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // Use a UIHostingController as window root view controller.
         if let windowScene = scene as? UIWindowScene {
             let window = UIWindow(windowScene: windowScene)
-            window.rootViewController = UIHostingController(rootView: contentView)
+            window.rootViewController = OrientationLockedHostingController(rootView: contentView)
             self.window = window
             window.makeKeyAndVisible()
         }
