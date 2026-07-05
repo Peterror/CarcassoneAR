@@ -18,6 +18,11 @@ struct ARViewContainer: UIViewRepresentable {
     @Binding var projectedCorners: [CGPoint]?
     @Binding var cameraImageSize: CGSize
 
+    /// Whether the AR session should be running. When false (the 2D view is shown),
+    /// the session is paused to save battery while the ARView stays alive so that
+    /// returning to AR resumes instantly without re-scanning.
+    var isSessionActive: Bool
+
     func makeUIView(context: Context) -> ARView {
         let arView = ARView(frame: .zero)
 
@@ -30,10 +35,13 @@ struct ARViewContainer: UIViewRepresentable {
         context.coordinator.cameraImageSizeBinding = $cameraImageSize
         context.coordinator.capturedFrameBinding = $capturedFrame
 
-        // Start AR session
+        // Start AR session. The configuration is stored on the coordinator so the
+        // session can be resumed with the same settings after being paused.
         let configuration = ARWorldTrackingConfiguration()
         configuration.planeDetection = [.horizontal]
+        context.coordinator.configuration = configuration
         arView.session.run(configuration)
+        context.coordinator.isSessionRunning = true
 
         return arView
     }
@@ -78,6 +86,15 @@ struct ARViewContainer: UIViewRepresentable {
                 lockedPlane = nil
                 resetTrigger = false
             }
+        }
+
+        // Pause/resume the session as the view mode changes. The ARView is kept alive
+        // across switches, so resuming retains tracking and the locked plane (no
+        // re-scan) while pausing stops the camera to save battery in the 2D view.
+        if isSessionActive {
+            context.coordinator.resumeSessionIfNeeded()
+        } else {
+            context.coordinator.pauseSessionIfNeeded()
         }
     }
 
@@ -139,6 +156,8 @@ struct ARViewContainer: UIViewRepresentable {
         var lockedPlaneID: UUID?
         var lockedPlaneTransform: simd_float4x4?  // Store locked plane's transform
         var currentPlaneData: PlaneData?  // Store plane data in coordinator
+        var configuration: ARWorldTrackingConfiguration?  // Stored to resume after pausing
+        var isSessionRunning = false  // Tracks session state to avoid redundant pause/run calls
 
         // Store bindings directly to avoid stale parent struct
         var lockedPlaneDataBinding: Binding<PlaneData?>!
@@ -147,6 +166,24 @@ struct ARViewContainer: UIViewRepresentable {
         var capturedFrameBinding: Binding<CapturedFrame?>!
 
         init() {
+        }
+
+        /// Pause the AR session (camera + tracking) without tearing down the ARView.
+        /// Stops camera capture to save battery while the 2D view is shown.
+        func pauseSessionIfNeeded() {
+            guard isSessionRunning else { return }
+            arView.session.pause()
+            isSessionRunning = false
+            AppLogger.arCoordinator.info("AR session paused (2D view active)")
+        }
+
+        /// Resume the AR session, retaining existing tracking and the locked plane so
+        /// returning to the AR view is immediate (no re-scan, no anchor reset).
+        func resumeSessionIfNeeded() {
+            guard !isSessionRunning, let configuration else { return }
+            arView.session.run(configuration)
+            isSessionRunning = true
+            AppLogger.arCoordinator.info("AR session resumed (AR view active)")
         }
 
         /// Result of computing the capture region for a single AR frame.
