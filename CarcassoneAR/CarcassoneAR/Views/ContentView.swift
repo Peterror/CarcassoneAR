@@ -26,18 +26,23 @@ struct ContentView: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                // AR Camera View - Only render when in AR mode
-                if viewMode == .ar {
+                // AR Camera View - kept alive across mode switches so returning from
+                // 2D is instant. The session is paused (and the view hidden) in 2D
+                // mode to save battery; see ARViewContainer.isSessionActive.
                 ARViewContainer(
                     lockedPlane: $lockedPlane,
                     capturedFrame: $capturedFrame,
                     resetTrigger: $resetTrigger,
                     captureNow: $captureNow,
                     projectedCorners: $projectedCorners,
-                    cameraImageSize: $cameraImageSize
+                    cameraImageSize: $cameraImageSize,
+                    isSessionActive: viewMode == .ar
                 )
                 .edgesIgnoringSafeArea(.all)
+                .opacity(viewMode == .ar ? 1 : 0)
 
+                // AR overlays and controls - only shown in AR mode
+                if viewMode == .ar {
                 // Corner markers overlay - must also ignore safe area to match ARView coordinate system
                 if let corners = projectedCorners, cameraImageSize != .zero {
                     CornerMarkersOverlay(corners: corners, imageSize: cameraImageSize)
